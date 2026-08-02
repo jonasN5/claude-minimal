@@ -58,8 +58,16 @@ type App struct {
 	// Sessions currently being deleted (teardown hooks run in the background).
 	deleting map[string]bool
 
+	// Cached context.md tails, shown as a preview for stopped sessions.
+	previews map[string]*tailPreview
+
 	program *tea.Program
 	notify  chan struct{}
+}
+
+type tailPreview struct {
+	mtime time.Time
+	lines []string
 }
 
 // New creates the app model and loads sessions from disk.
@@ -75,6 +83,7 @@ func New(cfg *config.Config) (*App, error) {
 		sessions: sessions,
 		notify:   make(chan struct{}, 1),
 		deleting: map[string]bool{},
+		previews: map[string]*tailPreview{},
 	}, nil
 }
 
@@ -644,10 +653,14 @@ func (a *App) viewTerminal() string {
 	case a.deleting[s.Name]:
 		inner = centered(cols, rows, dimStyle.Render("Deleting "+s.Name+"…\n\nrunning teardown hooks (see teardown.log)"))
 	case s.Proc == nil:
-		inner = centered(cols, rows,
-			dimStyle.Render(fmt.Sprintf("Session %q is not running.", s.Name))+"\n\n"+
-				dimStyle.Render("Press ")+keyStyle.Render("enter")+
-				dimStyle.Render(" to resume with previous context\n(claude --continue + context.md)"))
+		if tail := a.previewLines(s); len(tail) > 0 {
+			inner = renderPreview(tail, cols, rows)
+		} else {
+			inner = centered(cols, rows,
+				dimStyle.Render(fmt.Sprintf("Session %q is not running.", s.Name))+"\n\n"+
+					dimStyle.Render("Press ")+keyStyle.Render("enter")+
+					dimStyle.Render(" to resume with previous context\n(claude --continue + context.md)"))
+		}
 	default:
 		var sel *SelRange
 		if a.selecting {
@@ -672,6 +685,85 @@ func (a *App) viewTerminal() string {
 
 func centered(cols, rows int, text string) string {
 	return lipgloss.Place(cols, rows, lipgloss.Center, lipgloss.Center, text)
+}
+
+// previewLines returns the saved conversation tail of a stopped session,
+// cached by context.md mtime so the file isn't re-read on every frame.
+func (a *App) previewLines(s *session.Session) []string {
+	info, err := os.Stat(s.ContextFile())
+	if err != nil {
+		return nil
+	}
+	if p, ok := a.previews[s.Name]; ok && p.mtime.Equal(info.ModTime()) {
+		return p.lines
+	}
+	data, err := os.ReadFile(s.ContextFile())
+	if err != nil {
+		return nil
+	}
+	lines := parseTail(string(data))
+	a.previews[s.Name] = &tailPreview{mtime: info.ModTime(), lines: lines}
+	return lines
+}
+
+// parseTail extracts the content between the OUTERMOST ``` fences of a
+// context.md file (the conversation itself may contain nested fences).
+func parseTail(data string) []string {
+	lines := strings.Split(data, "\n")
+	start, end := -1, -1
+	for i, l := range lines {
+		if strings.HasPrefix(l, "```") {
+			start = i + 1
+			break
+		}
+	}
+	for i := len(lines) - 1; i >= 0; i-- {
+		if lines[i] == "```" {
+			end = i
+			break
+		}
+	}
+	if start < 1 || end <= start {
+		return nil
+	}
+	out := lines[start:end]
+	for len(out) > 0 && strings.TrimSpace(out[0]) == "" {
+		out = out[1:]
+	}
+	for len(out) > 0 && strings.TrimSpace(out[len(out)-1]) == "" {
+		out = out[:len(out)-1]
+	}
+	return out
+}
+
+func padTo(s string, cols int) string {
+	if w := lipgloss.Width(s); w < cols {
+		return s + strings.Repeat(" ", cols-w)
+	}
+	return s
+}
+
+// renderPreview shows the tail of the previous conversation (read-only) with
+// a resume hint, without launching Claude or loading any context.
+func renderPreview(tail []string, cols, rows int) string {
+	body := rows - 2
+	if body < 1 {
+		body = 1
+	}
+	if len(tail) > body {
+		tail = tail[len(tail)-body:]
+	}
+	out := make([]string, 0, rows)
+	out = append(out, padTo(dimStyle.Render(truncate(" ── previous conversation ── ", cols)), cols))
+	for _, l := range tail {
+		out = append(out, padTo(truncate(l, cols), cols))
+	}
+	for len(out) < rows-1 {
+		out = append(out, strings.Repeat(" ", cols))
+	}
+	hint := dimStyle.Render(" ○ not running — press ") + keyStyle.Render("enter") + dimStyle.Render(" to resume")
+	out = append(out, padTo(hint, cols))
+	return strings.Join(out, "\n")
 }
 
 func (a *App) viewStatusBar() string {
