@@ -113,6 +113,11 @@ func (a *App) selected() *session.Session {
 
 func (a *App) spawn(s *session.Session) {
 	cols, rows := a.termSize()
+	// User-approved: pre-trust only workspaces this tool created itself, so
+	// Claude doesn't show the folder-trust dialog for every new session.
+	if err := session.EnsureTrusted(s.Workspace()); err != nil {
+		a.errMsg = "pre-trust failed: " + err.Error()
+	}
 	argv := s.LaunchArgv(a.cfg)
 	proc, err := session.Start(s.Workspace(), argv, cols, rows, s.ContextFile(), a.cfg.TailLines, a.requestRepaint)
 	if err != nil {

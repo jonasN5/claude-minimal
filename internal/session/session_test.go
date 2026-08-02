@@ -132,3 +132,34 @@ func TestProcTail(t *testing.T) {
 		t.Errorf("tail missing ANSI-stripped output:\n%s", data)
 	}
 }
+
+func TestEnsureTrusted(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "claude.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"numStartups":42,"projects":{"/existing":{"hasTrustDialogAccepted":true,"history":[1,2]}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureTrustedIn(cfgPath, "/new/workspace"); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(cfgPath)
+	s := string(data)
+	for _, want := range []string{`"/new/workspace":{"hasTrustDialogAccepted":true}`, `"numStartups":42`, `"history":[1,2]`} {
+		if !strings.Contains(s, want) {
+			t.Errorf("missing %s in %s", want, s)
+		}
+	}
+	// Idempotent, and refuses to rewrite an unparseable config.
+	if err := ensureTrustedIn(cfgPath, "/new/workspace"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, []byte("{corrupt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureTrustedIn(cfgPath, "/other"); err == nil {
+		t.Fatal("expected parse error on corrupt config")
+	}
+	if data, _ := os.ReadFile(cfgPath); string(data) != "{corrupt" {
+		t.Error("corrupt config was rewritten")
+	}
+}

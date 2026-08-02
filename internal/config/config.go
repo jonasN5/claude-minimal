@@ -33,6 +33,10 @@ func (p Project) UseWorktree() bool { return p.Worktree == nil || *p.Worktree }
 type Config struct {
 	// Root is the folder scanned for git repositories (default ~/projects).
 	Root string `toml:"root"`
+	// AutoDiscover controls whether git repositories under Root are added to
+	// the project picker alongside configured [[project]] entries (default
+	// true). Set to false to offer only the configured projects.
+	AutoDiscover *bool `toml:"auto_discover"`
 	// ScanDepth is how many directory levels below Root to scan (default 2).
 	ScanDepth int `toml:"scan_depth"`
 	// ClaudeCmd is the binary launched in each session (default "claude").
@@ -108,6 +112,9 @@ func (c *Config) DiscoverProjects() []Project {
 	for _, p := range c.Projects {
 		seen[p.Path] = true
 		out = append(out, p)
+	}
+	if c.AutoDiscover != nil && !*c.AutoDiscover {
+		return out
 	}
 	var discovered []Project
 	var scan func(dir string, depth int)

@@ -205,7 +205,7 @@ func (s *Session) writeSetupScript() error {
 			continue
 		}
 		fmt.Fprintf(&b, "echo '[claude-minimal] %s: running setup hook'\n", p.Name)
-		fmt.Fprintf(&b, "( cd %q && CLAUDE_MINIMAL_SESSION=%q %s ) || echo '[claude-minimal] WARNING: setup hook for %s failed'\n",
+		fmt.Fprintf(&b, "( cd %q && CLAUDE_MINIMAL_SESSION=%q %s < /dev/null ) || echo '[claude-minimal] WARNING: setup hook for %s failed'\n",
 			p.WorktreePath, s.Name, p.Setup, p.Name)
 	}
 	b.WriteString("echo '[claude-minimal] provisioning done'\n")

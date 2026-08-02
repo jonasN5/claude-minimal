@@ -51,6 +51,7 @@ A stopped session shows a placeholder; the first keypress relaunches it with `cl
 
 ```toml
 root = "~/projects"
+# auto_discover = false          # picker offers ONLY the [[project]] entries below
 claude_cmd = "claude"
 # claude_args = ["--model", "opus"]
 # data_dir = "~/.claude-minimal"   # session state, worktrees, context tails
