@@ -1,0 +1,4 @@
+claude-minimal
+/dist/
+*.log
+.DS_Store
