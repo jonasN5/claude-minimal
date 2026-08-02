@@ -1,14 +1,48 @@
 # claude-minimal
 
-A minimal, fast terminal session manager for [Claude Code](https://claude.com/claude-code). A single small Go binary, no tmux dependency, near-zero idle resource usage.
+A minimal, fast terminal session manager for [Claude Code](https://claude.com/claude-code). A single small Go binary (~5 MB), no tmux dependency, near-zero idle resource usage.
 
-Built as a lighter alternative to claude-squad, with a different workflow:
+Built as a lighter alternative to claude-squad, with a different workflow: sessions are defined by the **project context** they load, provisioning is **automated by hooks**, and there is **no pause/resume ceremony** — sessions can always be killed and picked up again instantly.
 
-- **Project-context sessions.** The app launches over a top-level projects folder (default `~/projects`). Creating a session asks which project(s) to load — one repo, several repos together, or none for free-form work. All selected repos are checked out (git worktrees) into one combined workspace with a generated `CLAUDE.md`, so Claude sees the full cross-repo context.
-- **Provisioning hooks.** Each project can declare a `setup` hook (e.g. a script that clones the dev DB and assigns isolated ports) that runs automatically inside the session pane when the session starts, and a `teardown` hook that runs on deletion.
-- **No pause/resume ceremony.** The tail of every conversation is continuously saved to a `context.md` file in the session directory. Quit whenever you like; selecting a stopped session and pressing a key relaunches it with `claude --continue` and the saved context file as backup.
-- **Live, typeable preview.** The dashboard lists sessions on the left and shows the **live** conversation of the selected session on the right. You type straight into it — no "press enter to attach" step.
-- **Pane-aware mouse.** Drag inside the conversation pane to select text — the selection is scoped to the pane (never bleeds into the session list) and is **copied to the clipboard automatically on release**. Click a session in the list to switch to it. The scroll wheel is forwarded as arrow keys, matching Terminal.app's alternate-screen behavior. Pastes (⌘V) are forwarded as bracketed paste.
+## Features
+
+### Project-context sessions
+The app launches over a top-level projects folder (default `~/projects`). Creating a session (⌥n) asks for a name, then which project(s) to load:
+
+- **one repo** — classic single-project session;
+- **several repos together** — e.g. a backend and its sibling service; all of them are checked out into one combined workspace so Claude sees the full cross-repo context;
+- **none** — a free-form session with a scratch workspace.
+
+Each selected repo becomes a **git worktree** on a dedicated `session/<name>` branch (or a symlink with `worktree = false`), and a generated workspace `CLAUDE.md` tells Claude what's checked out where.
+
+### Provisioning and kill hooks
+Each project can declare, in the config:
+
+- a **`setup` hook** — runs inside the fresh worktree before Claude starts, streaming its output into the session pane. Use it to clone a dev database, assign per-session ports, start docker services, etc.
+- a **`teardown` (kill) hook** — runs when the session is deleted (⌥d). Teardown runs **in the background**: the session shows `…` in the list until cleanup finishes and the rest of the UI stays usable. Output goes to the session's `teardown.log`.
+
+Hooks receive `CLAUDE_MINIMAL_SESSION=<name>` in their environment and run with stdin from `/dev/null` — use non-interactive flags (`--force`, `--yes`); there is no TTY to answer prompts on.
+
+### Instant resume, no pause/resume
+The tail of every conversation is ANSI-stripped and auto-saved to a `context.md` file in the session directory (every 5 seconds and on exit). Quit whenever you like: selecting a stopped session and pressing a key relaunches it with `claude --continue`, which restores Claude's own conversation history — `context.md` covers anything else and is referenced from the workspace `CLAUDE.md`.
+
+### Live, typeable conversation pane
+The dashboard lists sessions on the left and shows the **live** conversation of the selected session on the right — a real in-process terminal emulator attached to Claude's PTY, not a preview snapshot. You type straight into it; there is no "press enter to attach" step. Switching sessions (⌥↑/↓ or a click) swaps the pane instantly.
+
+### Pane-aware mouse
+- **Drag inside the conversation pane** to select text. The selection is scoped to the pane — it never bleeds into the session list — and is **copied to the clipboard automatically on release** (the status bar confirms with "✓ copied N chars").
+- **Click a session** in the list to switch to it.
+- **Scroll wheel** is forwarded as arrow keys, matching Terminal.app's alternate-screen behavior.
+- **⌘V paste** is forwarded to Claude as a bracketed paste (multi-line pastes stay one block).
+
+### Pre-trusted workspaces
+Session workspaces are created fresh, so Claude Code would normally show its "do you trust this folder?" dialog every single time. claude-minimal pre-registers each workspace it creates as an accepted folder in `~/.claude.json` before launch — only for its own workspaces, via an atomic parse-safe merge that never rewrites a config it couldn't parse.
+
+### Safe deletion
+Deleting a session refuses (without `f`) if any worktree has **uncommitted changes** or **commits that exist on no remote** (measured against the branch's recorded base commit, so it works in repos without remotes too). Force-delete is always available and still runs teardown hooks.
+
+### Stable session list
+Sessions are listed oldest-first with stable numbers — a session keeps its number for its whole lifetime and new sessions append at the bottom. Status dots: `●` running, `○` stopped, `…` deleting. With no sessions at all, a full-screen welcome takes over.
 
 ## Install
 
@@ -31,29 +65,45 @@ To get a launchable app (Spotlight/Dock) that opens a terminal directly on your 
 ## Usage
 
 ```bash
-claude-minimal              # scans the configured root (default ~/projects)
+claude-minimal              # uses the configured root (default ~/projects)
 claude-minimal -root ~/work
 ```
+
+### Keys
 
 | Key | Action |
 |-----|--------|
 | ⌥n | New session (name → project multi-select) |
 | ⌥↑ / ⌥↓ (or Ctrl+↑/↓) | Switch session — the right pane follows instantly |
-| ⌥d | Delete session (refuses if a worktree holds unpushed work; `f` forces) |
-| ⌥l | Toggle focus to the session list (j/k navigation) |
-| ⌥q (or Ctrl+q) | Quit — all context tails are saved; sessions resume later |
-| anything else | Typed straight into the selected session |
+| ⌥d | Delete session (`y` confirm · `f` force · `esc` cancel) |
+| ⌥l | Toggle focus to the session list |
+| ⌥q (or Ctrl+q) | Quit — context tails are saved; sessions resume later |
+| anything else | Typed straight into the selected session (incl. ⌥⏎ newline) |
 
-A stopped session shows a placeholder; the first keypress relaunches it with `claude --continue`.
+While the **list** has focus (⌥l): `j/k` or arrows navigate, `n` new, `d` delete, `q` quit, `enter`/`esc` back to the conversation.
+
+In the **new-session wizard**: type a name (empty = timestamp) → `enter` → `space` toggles projects → `enter` creates; `esc` goes back/cancels.
+
+A stopped session shows a placeholder; the first keypress relaunches it with `claude --continue` (that keypress is not forwarded).
+
+### Mouse
+
+| Gesture | Action |
+|---------|--------|
+| Drag in conversation pane | Select pane text; auto-copies to clipboard on release |
+| Click session in list | Switch to that session |
+| Scroll wheel | Forwarded as arrow keys |
+| ⌘V | Bracketed paste into the session |
 
 ## Configuration
 
-`~/.config/claude-minimal/config.toml` — everything is optional. Repos under `root` are auto-discovered (2 levels deep); `[[project]]` entries add hooks or override defaults.
+`~/.config/claude-minimal/config.toml` — everything is optional; the app works with zero config.
 
 ```toml
-root = "~/projects"
-# auto_discover = false          # picker offers ONLY the [[project]] entries below
-claude_cmd = "claude"
+root = "~/projects"        # folder scanned for repos; also the -root flag
+auto_discover = false      # false = picker offers ONLY the [[project]] entries
+# scan_depth = 2           # how deep under root to look for git repos
+claude_cmd = "claude"      # binary launched in each session
 # claude_args = ["--model", "opus"]
 # data_dir = "~/.claude-minimal"   # session state, worktrees, context tails
 # tail_lines = 2000                # lines of conversation kept in context.md
@@ -78,7 +128,17 @@ path = "~/projects/personal/notes"
 worktree = false   # symlink the repo instead of isolating it
 ```
 
-Hooks receive `CLAUDE_MINIMAL_SESSION=<name>` in their environment.
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `root` | `~/projects` | Folder the app launches over; scanned for git repos |
+| `auto_discover` | `true` | Add repos found under `root` to the project picker; `false` restricts the picker to `[[project]]` entries |
+| `scan_depth` | `2` | Directory levels under `root` to scan |
+| `claude_cmd` / `claude_args` | `claude` / `[]` | Command launched in each session |
+| `data_dir` | `~/.claude-minimal` | Where sessions live |
+| `tail_lines` | `2000` | Size of the saved conversation tail |
+| `[[project]].worktree` | `true` | `false` symlinks the repo instead of creating a worktree |
+| `[[project]].setup` | — | Provisioning hook (first launch, in-pane) |
+| `[[project]].teardown` | — | Kill hook (on delete, background, → `teardown.log`) |
 
 ## How a session is laid out
 
@@ -87,19 +147,21 @@ Hooks receive `CLAUDE_MINIMAL_SESSION=<name>` in their environment.
 ├── meta.json        # projects, branches, base commits
 ├── setup.sh         # generated from the project setup hooks
 ├── context.md       # auto-saved conversation tail (every 5s + on exit)
+├── teardown.log     # kill-hook output (during deletion)
 └── workspace/       # Claude's working directory
     ├── CLAUDE.md    # generated: lists each project, points at context.md
     ├── med/         # git worktree on branch session/<name>
     └── bilan-prevention/
 ```
 
-Deleting a session (⌥d) kills the process, runs teardown hooks (logged to `teardown.log`), removes worktrees and deletes the directory — but refuses (without `f`) if any worktree has uncommitted changes or commits that exist on no remote. Teardown runs in the background: the session shows `…` in the list until cleanup finishes, and the rest of the UI stays usable.
+Deleting a session (⌥d) kills the process, runs teardown hooks, removes worktrees and their `session/<name>` branches, and deletes the directory — with the unpushed-work guard described above.
 
 ## Design notes
 
-- The right pane is a real in-process terminal emulator ([vt10x](https://github.com/hinshun/vt10x)) attached to Claude's PTY — not a tmux attach. That's what makes select-and-type instant.
+- The right pane is a real in-process terminal emulator ([vt10x](https://github.com/hinshun/vt10x)) attached to Claude's PTY — not a tmux attach. That's what makes select-and-type instant and keeps resource usage tiny.
 - Because sessions run in-process, quitting the app stops them; that's by design. Resume is cheap: `claude --continue` restores Claude's own conversation history, and `context.md` covers anything else.
-- Idle footprint is the Go binary plus one PTY per running session.
+- Idle footprint is the Go binary plus one PTY per running session. No daemons, no tmux servers.
+- Built with [bubbletea](https://github.com/charmbracelet/bubbletea), [lipgloss](https://github.com/charmbracelet/lipgloss), [creack/pty](https://github.com/creack/pty) and [vt10x](https://github.com/hinshun/vt10x).
 
 ## License
 
