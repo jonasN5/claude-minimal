@@ -92,9 +92,11 @@ func (st *Store) List() ([]*Session, error) {
 		}
 		out = append(out, s)
 	}
+	// Oldest first: sessions keep their number for their whole lifetime;
+	// new sessions append at the bottom.
 	for i := 0; i < len(out); i++ {
 		for j := i + 1; j < len(out); j++ {
-			if out[j].CreatedAt.After(out[i].CreatedAt) {
+			if out[j].CreatedAt.Before(out[i].CreatedAt) {
 				out[i], out[j] = out[j], out[i]
 			}
 		}
