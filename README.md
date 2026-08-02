@@ -7,7 +7,8 @@ Built as a lighter alternative to claude-squad, with a different workflow:
 - **Project-context sessions.** The app launches over a top-level projects folder (default `~/projects`). Creating a session asks which project(s) to load — one repo, several repos together, or none for free-form work. All selected repos are checked out (git worktrees) into one combined workspace with a generated `CLAUDE.md`, so Claude sees the full cross-repo context.
 - **Provisioning hooks.** Each project can declare a `setup` hook (e.g. a script that clones the dev DB and assigns isolated ports) that runs automatically inside the session pane when the session starts, and a `teardown` hook that runs on deletion.
 - **No pause/resume ceremony.** The tail of every conversation is continuously saved to a `context.md` file in the session directory. Quit whenever you like; selecting a stopped session and pressing a key relaunches it with `claude --continue` and the saved context file as backup.
-- **Live, typeable preview.** The dashboard lists sessions on the left and shows the **live** conversation of the selected session on the right. You type straight into it — no "press enter to attach" step. Copy/paste works natively (mouse selection is not captured; pastes are forwarded as bracketed paste).
+- **Live, typeable preview.** The dashboard lists sessions on the left and shows the **live** conversation of the selected session on the right. You type straight into it — no "press enter to attach" step.
+- **Pane-aware mouse.** Drag inside the conversation pane to select text — the selection is scoped to the pane (never bleeds into the session list) and is **copied to the clipboard automatically on release**. Click a session in the list to switch to it. The scroll wheel is forwarded as arrow keys, matching Terminal.app's alternate-screen behavior. Pastes (⌘V) are forwarded as bracketed paste.
 
 ## Install
 

@@ -36,9 +36,20 @@ func colorSGR(c vt10x.Color, fg bool) string {
 	}
 }
 
+// SelRange is a normalized linear selection over pane cells:
+// (X1,Y1) <= (X2,Y2) in row-major order.
+type SelRange struct{ X1, Y1, X2, Y2 int }
+
+func (r *SelRange) contains(x, y int) bool {
+	if r == nil {
+		return false
+	}
+	return (y > r.Y1 || (y == r.Y1 && x >= r.X1)) && (y < r.Y2 || (y == r.Y2 && x <= r.X2))
+}
+
 // RenderTerminal draws the emulator screen as ANSI-styled lines.
-// The cursor cell is drawn reversed when focused.
-func RenderTerminal(vt vt10x.Terminal, cols, rows int, focused bool) string {
+// The cursor cell is drawn reversed when focused; sel cells are highlighted.
+func RenderTerminal(vt vt10x.Terminal, cols, rows int, focused bool, sel *SelRange) string {
 	vt.Lock()
 	defer vt.Unlock()
 
@@ -65,8 +76,8 @@ func RenderTerminal(vt vt10x.Terminal, cols, rows int, focused bool) string {
 			if mode&attrUnderline != 0 {
 				parts = append(parts, "4")
 			}
-			if cursorVisible && x == cursor.X && y == cursor.Y {
-				parts = append(parts, "7") // draw the cursor as reverse video
+			if (cursorVisible && x == cursor.X && y == cursor.Y) || sel.contains(x, y) {
+				parts = append(parts, "7") // reverse video: cursor / selection
 			}
 			sgr := strings.Join(parts, ";")
 			if sgr != lastSGR {

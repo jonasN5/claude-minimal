@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atotto/clipboard"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -41,6 +42,12 @@ type App struct {
 	wizard        *wizard
 	confirmMsg    string
 	errMsg        string
+	flash         string
+
+	// In-pane mouse selection (cell coordinates within the conversation pane).
+	selecting bool
+	selAnchor [2]int
+	selPos    [2]int
 
 	program *tea.Program
 	notify  chan struct{}
@@ -136,11 +143,18 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.WindowSizeMsg:
 		a.width, a.height = msg.Width, msg.Height
+		a.selecting = false
 		cols, rows := a.termSize()
 		for _, s := range a.sessions {
 			if s.Running() {
 				s.Proc.Resize(cols, rows)
 			}
+		}
+		return a, nil
+
+	case tea.MouseMsg:
+		if a.mode == modeMain {
+			return a.updateMouse(msg)
 		}
 		return a, nil
 
@@ -157,6 +171,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (a *App) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	a.flash = ""
 	// Global shortcuts, never forwarded to the session.
 	switch msg.String() {
 	case "ctrl+q", "alt+q":
@@ -224,6 +239,133 @@ func (a *App) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if b := keyToBytes(msg); b != nil {
 		s.Proc.Write(b)
+	}
+	return a, nil
+}
+
+// paneCell maps screen coordinates to conversation-pane cell coordinates.
+func (a *App) paneCell(mx, my int) (x, y int, inside bool) {
+	cols, rows := a.termSize()
+	x, y = mx-leftWidth-1, my-1
+	inside = x >= 0 && x < cols && y >= 0 && y < rows
+	if x < 0 {
+		x = 0
+	}
+	if x >= cols {
+		x = cols - 1
+	}
+	if y < 0 {
+		y = 0
+	}
+	if y >= rows {
+		y = rows - 1
+	}
+	return
+}
+
+// listItemAt maps a screen row in the left pane to a session index.
+// viewList layout: 4 header lines, then 3 lines per item (2 text + 1 blank).
+func (a *App) listItemAt(my int) (int, bool) {
+	if my < 4 || (my-4)%3 == 2 {
+		return 0, false
+	}
+	i := (my - 4) / 3
+	return i, i < len(a.sessions)
+}
+
+func (a *App) selRange() *SelRange {
+	x1, y1 := a.selAnchor[0], a.selAnchor[1]
+	x2, y2 := a.selPos[0], a.selPos[1]
+	if y1 > y2 || (y1 == y2 && x1 > x2) {
+		x1, y1, x2, y2 = x2, y2, x1, y1
+	}
+	return &SelRange{X1: x1, Y1: y1, X2: x2, Y2: y2}
+}
+
+func (a *App) selectionText() string {
+	s := a.selected()
+	if s == nil || s.Proc == nil {
+		return ""
+	}
+	cols, _ := a.termSize()
+	r := a.selRange()
+	vt := s.Proc.VT
+	vt.Lock()
+	defer vt.Unlock()
+	var lines []string
+	for y := r.Y1; y <= r.Y2; y++ {
+		sx, ex := 0, cols-1
+		if y == r.Y1 {
+			sx = r.X1
+		}
+		if y == r.Y2 {
+			ex = r.X2
+		}
+		var b strings.Builder
+		for x := sx; x <= ex; x++ {
+			ch := vt.Cell(x, y).Char
+			if ch == 0 {
+				ch = ' '
+			}
+			b.WriteRune(ch)
+		}
+		lines = append(lines, strings.TrimRight(b.String(), " "))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (a *App) updateMouse(m tea.MouseMsg) (tea.Model, tea.Cmd) {
+	switch m.Button {
+	case tea.MouseButtonWheelUp, tea.MouseButtonWheelDown:
+		// Match Terminal.app's alt-screen behavior: wheel = arrow keys.
+		if s := a.selected(); s != nil && s.Running() {
+			seq := "\x1b[A"
+			if m.Button == tea.MouseButtonWheelDown {
+				seq = "\x1b[B"
+			}
+			s.Proc.Write([]byte(strings.Repeat(seq, 3)))
+		}
+		return a, nil
+	}
+	switch m.Action {
+	case tea.MouseActionPress:
+		if m.Button != tea.MouseButtonLeft {
+			return a, nil
+		}
+		a.flash = ""
+		if x, y, inside := a.paneCell(m.X, m.Y); inside {
+			a.selecting = true
+			a.selAnchor = [2]int{x, y}
+			a.selPos = a.selAnchor
+			a.focusList = false
+			return a, nil
+		}
+		if m.X < leftWidth {
+			if i, ok := a.listItemAt(m.Y); ok {
+				a.sel = i
+				a.focusList = false
+			}
+		}
+	case tea.MouseActionMotion:
+		if a.selecting {
+			x, y, _ := a.paneCell(m.X, m.Y)
+			a.selPos = [2]int{x, y}
+		}
+	case tea.MouseActionRelease:
+		if !a.selecting {
+			return a, nil
+		}
+		a.selecting = false
+		if a.selAnchor == a.selPos {
+			return a, nil // plain click, nothing to copy
+		}
+		if text := a.selectionText(); strings.TrimSpace(text) != "" {
+			if err := clipboard.WriteAll(text); err != nil {
+				a.flash = "copy failed: " + err.Error()
+			} else {
+				a.flash = fmt.Sprintf("✓ copied %d chars", len(text))
+			}
+		}
 	}
 	return a, nil
 }
@@ -473,7 +615,11 @@ func (a *App) viewTerminal() string {
 				dimStyle.Render("Press ")+keyStyle.Render("enter")+
 				dimStyle.Render(" to resume with previous context\n(claude --continue + context.md)"))
 	default:
-		inner = RenderTerminal(s.Proc.VT, cols, rows, !a.focusList)
+		var sel *SelRange
+		if a.selecting {
+			sel = a.selRange()
+		}
+		inner = RenderTerminal(s.Proc.VT, cols, rows, !a.focusList, sel)
 		if s.Proc.Exited() {
 			lines := strings.Split(inner, "\n")
 			note := errStyle.Render(" [exited — press enter to restart] ")
@@ -505,6 +651,9 @@ func (a *App) viewStatusBar() string {
 	}, sep)
 	if a.focusList {
 		bar += dimStyle.Render("   [list: j/k, enter]")
+	}
+	if a.flash != "" {
+		bar += "  " + keyStyle.Render(a.flash)
 	}
 	if a.errMsg != "" {
 		bar += "  " + errStyle.Render(a.errMsg)
