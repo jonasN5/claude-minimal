@@ -64,8 +64,9 @@ path = "~/projects/personal/med"
 # Runs inside the fresh worktree before Claude starts, streaming into the pane.
 # e.g. clone the dev DB, assign per-session ports, start docker services:
 setup = "./scripts/claude-session-start-hook.sh"
-# Runs on session deletion:
-teardown = "./scripts/cleanup-session.sh"
+# Kill hook: runs when the session is deleted (⌥d), in the background —
+# use --force / non-interactive flags, hooks have no TTY to prompt on:
+teardown = "./scripts/cleanup-session.sh --force"
 
 [[project]]
 name = "bilan-prevention"
@@ -92,7 +93,7 @@ Hooks receive `CLAUDE_MINIMAL_SESSION=<name>` in their environment.
     └── bilan-prevention/
 ```
 
-Deleting a session kills the process, runs teardown hooks, removes worktrees and deletes the directory — but refuses (without `f`) if any worktree has uncommitted changes or commits that exist on no remote.
+Deleting a session (⌥d) kills the process, runs teardown hooks (logged to `teardown.log`), removes worktrees and deletes the directory — but refuses (without `f`) if any worktree has uncommitted changes or commits that exist on no remote. Teardown runs in the background: the session shows `…` in the list until cleanup finishes, and the rest of the UI stays usable.
 
 ## Design notes
 

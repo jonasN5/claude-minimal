@@ -28,6 +28,12 @@ const (
 
 type repaintMsg struct{}
 
+// deleteDoneMsg reports completion of an async session deletion.
+type deleteDoneMsg struct {
+	name string
+	err  error
+}
+
 // App is the root bubbletea model.
 type App struct {
 	cfg   *config.Config
@@ -49,6 +55,9 @@ type App struct {
 	selAnchor [2]int
 	selPos    [2]int
 
+	// Sessions currently being deleted (teardown hooks run in the background).
+	deleting map[string]bool
+
 	program *tea.Program
 	notify  chan struct{}
 }
@@ -65,6 +74,7 @@ func New(cfg *config.Config) (*App, error) {
 		store:    store,
 		sessions: sessions,
 		notify:   make(chan struct{}, 1),
+		deleting: map[string]bool{},
 	}, nil
 }
 
@@ -152,6 +162,15 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 
+	case deleteDoneMsg:
+		delete(a.deleting, msg.name)
+		if msg.err != nil {
+			a.errMsg = "delete " + msg.name + ": " + msg.err.Error()
+		}
+		a.flash = ""
+		a.afterDelete()
+		return a, nil
+
 	case tea.MouseMsg:
 		if a.mode == modeMain {
 			return a.updateMouse(msg)
@@ -188,7 +207,7 @@ func (a *App) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.mode = modeWizard
 		return a, a.wizard.name.Focus()
 	case "alt+d":
-		if s := a.selected(); s != nil {
+		if s := a.selected(); s != nil && !a.deleting[s.Name] {
 			a.confirmMsg = ""
 			a.mode = modeConfirmDelete
 		}
@@ -209,7 +228,7 @@ func (a *App) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.mode = modeWizard
 			return a, a.wizard.name.Focus()
 		case "d":
-			if a.selected() != nil {
+			if s := a.selected(); s != nil && !a.deleting[s.Name] {
 				a.confirmMsg = ""
 				a.mode = modeConfirmDelete
 			}
@@ -230,6 +249,9 @@ func (a *App) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.mode = modeWizard
 			return a, a.wizard.name.Focus()
 		}
+		return a, nil
+	}
+	if a.deleting[s.Name] {
 		return a, nil
 	}
 	if !s.Running() {
@@ -391,21 +413,29 @@ func (a *App) updateConfirmDelete(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	switch msg.String() {
 	case "y":
-		if err := a.store.Delete(s, false); err != nil {
-			a.confirmMsg = err.Error() + " — press f to force-delete anyway"
+		// The safety check is fast and runs here; the slow teardown
+		// (docker, DB, hooks) runs in the background.
+		if dirty := s.DirtyProjects(); len(dirty) > 0 {
+			a.confirmMsg = "uncommitted or unpushed work in: " + strings.Join(dirty, ", ") +
+				" — press f to force-delete anyway"
 			return a, nil
 		}
-		a.afterDelete()
+		return a, a.startDelete(s)
 	case "f":
-		if err := a.store.Delete(s, true); err != nil {
-			a.confirmMsg = err.Error()
-			return a, nil
-		}
-		a.afterDelete()
+		return a, a.startDelete(s)
 	case "n", "esc", "q":
 		a.mode = modeMain
 	}
 	return a, nil
+}
+
+func (a *App) startDelete(s *session.Session) tea.Cmd {
+	a.deleting[s.Name] = true
+	a.mode = modeMain
+	a.flash = "deleting " + s.Name + "…"
+	return func() tea.Msg {
+		return deleteDoneMsg{s.Name, a.store.Delete(s, true)}
+	}
 }
 
 // reload re-reads sessions from disk, carrying live processes over from the
@@ -432,7 +462,6 @@ func (a *App) afterDelete() {
 	if a.sel < 0 {
 		a.sel = 0
 	}
-	a.mode = modeMain
 }
 
 func (a *App) updateWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -546,6 +575,9 @@ func (a *App) renderItem(i int) []string {
 	if s.Running() {
 		dot, dotStyle = "●", runDotStyle
 	}
+	if a.deleting[s.Name] {
+		dot, dotStyle = "…", offDotStyle
+	}
 	num := fmt.Sprintf(" %d. ", i+1)
 	name := truncate(s.Name, leftWidth-len(num)-4)
 	line1 := num + name
@@ -609,6 +641,8 @@ func (a *App) viewTerminal() string {
 	switch {
 	case s == nil:
 		inner = centered(cols, rows, dimStyle.Render("No session selected."))
+	case a.deleting[s.Name]:
+		inner = centered(cols, rows, dimStyle.Render("Deleting "+s.Name+"…\n\nrunning teardown hooks (see teardown.log)"))
 	case s.Proc == nil:
 		inner = centered(cols, rows,
 			dimStyle.Render(fmt.Sprintf("Session %q is not running.", s.Name))+"\n\n"+
