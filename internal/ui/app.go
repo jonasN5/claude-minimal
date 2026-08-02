@@ -145,7 +145,7 @@ func (a *App) spawn(s *session.Session) {
 		a.errMsg = "pre-trust failed: " + err.Error()
 	}
 	argv := s.LaunchArgv(a.cfg)
-	proc, err := session.Start(s.Workspace(), argv, cols, rows, s.ContextFile(), a.cfg.TailLines, a.requestRepaint)
+	proc, err := session.Start(s.Workspace(), argv, cols, rows, s.ContextFile(), a.requestRepaint)
 	if err != nil {
 		a.errMsg = "launch failed: " + err.Error()
 		return

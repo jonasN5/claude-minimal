@@ -34,7 +34,7 @@ func TestCreateAndDelete(t *testing.T) {
 	}
 	gitRepo(t, repo)
 
-	cfg := &config.Config{DataDir: filepath.Join(tmp, "data"), ClaudeCmd: "true", TailLines: 100}
+	cfg := &config.Config{DataDir: filepath.Join(tmp, "data"), ClaudeCmd: "true"}
 	st := NewStore(cfg)
 	s, err := st.Create("test one", []config.Project{{Name: "repo", Path: repo, Setup: "echo hook-ran"}})
 	if err != nil {
@@ -87,7 +87,7 @@ func TestDeleteRefusesDirty(t *testing.T) {
 	}
 	gitRepo(t, repo)
 
-	cfg := &config.Config{DataDir: filepath.Join(tmp, "data"), ClaudeCmd: "true", TailLines: 100}
+	cfg := &config.Config{DataDir: filepath.Join(tmp, "data"), ClaudeCmd: "true"}
 	st := NewStore(cfg)
 	s, err := st.Create("dirty", []config.Project{{Name: "repo", Path: repo}})
 	if err != nil {
@@ -111,7 +111,7 @@ func TestProcTail(t *testing.T) {
 	// The brief sleep keeps the PTY open long enough for the reader to drain
 	// (macOS can drop buffered PTY output when the child exits instantly);
 	// real sessions are long-lived interactive processes.
-	p, err := Start(tmp, []string{"/bin/sh", "-c", "printf 'hello \\033[31mworld\\033[0m\\r\\n'; sleep 0.3"}, 80, 24, tail, 100,
+	p, err := Start(tmp, []string{"/bin/sh", "-c", "printf 'hello \\033[31mworld\\033[0m\\r\\n'; sleep 0.3"}, 80, 24, tail,
 		func() { updates <- struct{}{} })
 	if err != nil {
 		t.Fatal(err)

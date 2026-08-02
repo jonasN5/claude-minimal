@@ -45,9 +45,6 @@ type Config struct {
 	ClaudeArgs []string `toml:"claude_args"`
 	// DataDir holds session state (default ~/.claude-minimal).
 	DataDir string `toml:"data_dir"`
-	// TailLines is how many lines of conversation tail are persisted to the
-	// session context file (default 2000).
-	TailLines int `toml:"tail_lines"`
 
 	Projects []Project `toml:"project"`
 }
@@ -92,9 +89,6 @@ func Load(rootOverride string) (*Config, error) {
 		cfg.DataDir = filepath.Join(home, ".claude-minimal")
 	}
 	cfg.DataDir = expand(cfg.DataDir)
-	if cfg.TailLines <= 0 {
-		cfg.TailLines = 2000
-	}
 	for i := range cfg.Projects {
 		cfg.Projects[i].Path = expand(cfg.Projects[i].Path)
 		if cfg.Projects[i].Name == "" {

@@ -3,7 +3,6 @@ package session
 import (
 	"os"
 	"os/exec"
-	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -13,11 +12,10 @@ import (
 	"github.com/hinshun/vt10x"
 )
 
-const ringSize = 1 << 20 // 1 MiB of raw output kept for the context tail
-
 // Proc is a live session process: Claude running in a PTY, mirrored into an
-// in-process terminal emulator so the UI can render it, plus a ring buffer of
-// raw output persisted periodically as the resume context file.
+// in-process terminal emulator so the UI can render it. The rendered screen
+// is periodically snapshotted to the session's context file so a stopped
+// session can show a readable preview and resume with recent context.
 type Proc struct {
 	VT vt10x.Terminal
 
@@ -25,18 +23,17 @@ type Proc struct {
 	ptmx   *os.File
 	onData func()
 
-	mu     sync.Mutex
-	ring   []byte
-	exited bool
+	mu         sync.Mutex
+	cols, rows int
+	exited     bool
 
-	tailPath  string
-	tailLines int
-	done      chan struct{}
+	tailPath string
+	done     chan struct{}
 }
 
 // Start launches argv in a PTY of the given size, in dir.
 // onData is called (from a goroutine) whenever the screen may have changed.
-func Start(dir string, argv []string, cols, rows int, tailPath string, tailLines int, onData func()) (*Proc, error) {
+func Start(dir string, argv []string, cols, rows int, tailPath string, onData func()) (*Proc, error) {
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
@@ -45,13 +42,14 @@ func Start(dir string, argv []string, cols, rows int, tailPath string, tailLines
 		return nil, err
 	}
 	p := &Proc{
-		VT:        vt10x.New(vt10x.WithSize(cols, rows)),
-		cmd:       cmd,
-		ptmx:      ptmx,
-		onData:    onData,
-		tailPath:  tailPath,
-		tailLines: tailLines,
-		done:      make(chan struct{}),
+		VT:       vt10x.New(vt10x.WithSize(cols, rows)),
+		cmd:      cmd,
+		ptmx:     ptmx,
+		onData:   onData,
+		cols:     cols,
+		rows:     rows,
+		tailPath: tailPath,
+		done:     make(chan struct{}),
 	}
 	go p.readLoop()
 	go p.tailLoop()
@@ -64,12 +62,6 @@ func (p *Proc) readLoop() {
 		n, err := p.ptmx.Read(buf)
 		if n > 0 {
 			_, _ = p.VT.Write(buf[:n])
-			p.mu.Lock()
-			p.ring = append(p.ring, buf[:n]...)
-			if len(p.ring) > ringSize {
-				p.ring = p.ring[len(p.ring)-ringSize:]
-			}
-			p.mu.Unlock()
 			p.onData()
 		}
 		if err != nil {
@@ -117,9 +109,13 @@ func (p *Proc) Resize(cols, rows int) {
 	}
 	_ = pty.Setsize(p.ptmx, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
 	p.VT.Resize(cols, rows)
+	p.mu.Lock()
+	p.cols, p.rows = cols, rows
+	p.mu.Unlock()
 }
 
-// Kill terminates the process, saving the context tail first.
+// Kill terminates the process, saving the context snapshot first (the live
+// screen is still intact at this point).
 func (p *Proc) Kill() {
 	p.SaveTail()
 	if p.cmd.Process != nil {
@@ -133,44 +129,54 @@ func (p *Proc) Kill() {
 	_ = p.ptmx.Close()
 }
 
-var (
-	ansiRe = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b[()][0-9A-B]|\x1b[=>]|\x1b[78MDE]|[\x00-\x08\x0b\x0c\x0e-\x1f]`)
-	crlfRe = regexp.MustCompile(`\r+\n`)
-	crRe   = regexp.MustCompile(`[^\n]*\r`)
-)
+// screenLines renders the emulator's current screen as plain text lines,
+// with trailing blank lines and per-line trailing spaces removed.
+func (p *Proc) screenLines() []string {
+	p.mu.Lock()
+	cols, rows := p.cols, p.rows
+	p.mu.Unlock()
+	p.VT.Lock()
+	defer p.VT.Unlock()
+	lines := make([]string, 0, rows)
+	for y := 0; y < rows; y++ {
+		var b strings.Builder
+		for x := 0; x < cols; x++ {
+			ch := p.VT.Cell(x, y).Char
+			if ch == 0 {
+				ch = ' '
+			}
+			b.WriteRune(ch)
+		}
+		lines = append(lines, strings.TrimRight(b.String(), " "))
+	}
+	for len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
+}
 
-// SaveTail writes the cleaned tail of the conversation to the context file so
-// a killed session can be resumed with its recent context intact.
+// SaveTail snapshots the rendered screen to the context file. Unlike an
+// ANSI-stripped raw stream (which glues cursor-positioned text together),
+// the rendered screen reads exactly like what was on display.
 func (p *Proc) SaveTail() {
 	if p.tailPath == "" {
 		return
 	}
-	p.mu.Lock()
-	raw := string(p.ring)
-	p.mu.Unlock()
-	text := ansiRe.ReplaceAllString(raw, "")
-	text = crlfRe.ReplaceAllString(text, "\n") // PTY ONLCR emits \r\n (or \r\r\n)
-	text = crRe.ReplaceAllString(text, "")     // keep only the final content of \r-rewritten lines
-	lines := strings.Split(text, "\n")
-	// Drop trailing-whitespace noise and collapse blank runs.
-	cleaned := make([]string, 0, len(lines))
-	blanks := 0
+	lines := p.screenLines()
+	nonBlank := 0
 	for _, l := range lines {
-		l = strings.TrimRight(l, " ")
-		if l == "" {
-			blanks++
-			if blanks > 1 {
-				continue
-			}
-		} else {
-			blanks = 0
+		if strings.TrimSpace(l) != "" {
+			nonBlank++
 		}
-		cleaned = append(cleaned, l)
 	}
-	if len(cleaned) > p.tailLines {
-		cleaned = cleaned[len(cleaned)-p.tailLines:]
+	// A nearly-empty screen (e.g. cleared during shutdown) must not clobber
+	// a useful earlier snapshot.
+	if nonBlank < 2 {
+		if _, err := os.Stat(p.tailPath); err == nil {
+			return
+		}
 	}
-	out := "# Conversation tail (auto-saved by claude-minimal)\n\nSaved " +
-		time.Now().Format(time.RFC3339) + "\n\n```\n" + strings.Join(cleaned, "\n") + "\n```\n"
+	out := "# Last screen (auto-saved by claude-minimal)\n\nSaved " +
+		time.Now().Format(time.RFC3339) + "\n\n```\n" + strings.Join(lines, "\n") + "\n```\n"
 	_ = os.WriteFile(p.tailPath, []byte(out), 0o644)
 }

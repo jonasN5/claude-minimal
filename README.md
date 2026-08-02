@@ -106,7 +106,6 @@ auto_discover = false      # false = picker offers ONLY the [[project]] entries
 claude_cmd = "claude"      # binary launched in each session
 # claude_args = ["--model", "opus"]
 # data_dir = "~/.claude-minimal"   # session state, worktrees, context tails
-# tail_lines = 2000                # lines of conversation kept in context.md
 
 [[project]]
 name = "med"
@@ -135,7 +134,6 @@ worktree = false   # symlink the repo instead of isolating it
 | `scan_depth` | `2` | Directory levels under `root` to scan |
 | `claude_cmd` / `claude_args` | `claude` / `[]` | Command launched in each session |
 | `data_dir` | `~/.claude-minimal` | Where sessions live |
-| `tail_lines` | `2000` | Size of the saved conversation tail |
 | `[[project]].worktree` | `true` | `false` symlinks the repo instead of creating a worktree |
 | `[[project]].setup` | — | Provisioning hook (first launch, in-pane) |
 | `[[project]].teardown` | — | Kill hook (on delete, background, → `teardown.log`) |
