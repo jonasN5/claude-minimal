@@ -41,8 +41,32 @@ Session workspaces are created fresh, so Claude Code would normally show its "do
 ### Safe deletion
 Deleting a session refuses (without `f`) if any worktree has **uncommitted changes** or **commits that exist on no remote** (measured against the branch's recorded base commit, so it works in repos without remotes too). Force-delete is always available and still runs teardown hooks.
 
+### Unseen-output indicator
+When Claude finishes a turn in a session you are **not** currently viewing, that session shows an orange `✻` in the list until you switch to it — so after a system notification you know exactly which conversation to check. The marker clears the moment the session is on screen.
+
+The indicator is driven by a [Claude Code Stop hook](https://docs.claude.com/en/docs/claude-code/hooks) that drops a `needs-attention` file in the session directory. Add it to `~/.claude/settings.json` (it ignores sessions not managed by claude-minimal):
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.cwd // empty' | { read -r d; case \"$d\" in \"$HOME\"/.claude-minimal/sessions/*/workspace*) touch \"${d%%/workspace*}/needs-attention\";; esac; } 2>/dev/null || true"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Pair it with a second Stop hook command that runs `osascript -e 'display notification ...'` (or `notify-send` on Linux) if you also want a system notification when Claude finishes.
+
 ### Stable session list
-Sessions are listed oldest-first with stable numbers — a session keeps its number for its whole lifetime and new sessions append at the bottom. Status dots: `●` running, `○` stopped, `…` deleting. With no sessions at all, a full-screen welcome takes over.
+Sessions are listed oldest-first with stable numbers — a session keeps its number for its whole lifetime and new sessions append at the bottom. Status dots: `●` running, `○` stopped, `✻` finished with unseen output, `…` deleting. With no sessions at all, a full-screen welcome takes over.
 
 ## Install
 
@@ -145,6 +169,7 @@ worktree = false   # symlink the repo instead of isolating it
 ├── meta.json        # projects, branches, base commits
 ├── setup.sh         # generated from the project setup hooks
 ├── context.md       # auto-saved conversation tail (every 5s + on exit)
+├── needs-attention  # marker: Claude finished, output not yet viewed (via Stop hook)
 ├── teardown.log     # kill-hook output (during deletion)
 └── workspace/       # Claude's working directory
     ├── CLAUDE.md    # generated: lists each project, points at context.md

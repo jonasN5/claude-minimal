@@ -50,6 +50,20 @@ func (s *Session) ContextFile() string { return filepath.Join(s.Dir, "context.md
 // Running reports whether the session has a live process.
 func (s *Session) Running() bool { return s.Proc != nil && !s.Proc.Exited() }
 
+// AttentionFile is a marker dropped by a Claude Code Stop hook when Claude
+// finishes a turn in this session; its presence means unseen output.
+func (s *Session) AttentionFile() string { return filepath.Join(s.Dir, "needs-attention") }
+
+// NeedsAttention reports whether the session has finished work the user
+// hasn't viewed yet.
+func (s *Session) NeedsAttention() bool {
+	_, err := os.Stat(s.AttentionFile())
+	return err == nil
+}
+
+// ClearAttention removes the marker once the session has been viewed.
+func (s *Session) ClearAttention() { _ = os.Remove(s.AttentionFile()) }
+
 func (s *Session) saveMeta() error {
 	data, err := json.MarshalIndent(s.Meta, "", "  ")
 	if err != nil {

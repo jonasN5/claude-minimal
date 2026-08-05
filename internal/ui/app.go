@@ -28,6 +28,14 @@ const (
 
 type repaintMsg struct{}
 
+// tickMsg drives a slow refresh so attention markers written by Stop hooks
+// show up even when no terminal output triggers a repaint.
+type tickMsg struct{}
+
+func tick() tea.Cmd {
+	return tea.Tick(2*time.Second, func(time.Time) tea.Msg { return tickMsg{} })
+}
+
 // deleteDoneMsg reports completion of an async session deletion.
 type deleteDoneMsg struct {
 	name string
@@ -114,7 +122,7 @@ func (a *App) Shutdown() {
 	}
 }
 
-func (a *App) Init() tea.Cmd { return nil }
+func (a *App) Init() tea.Cmd { return tick() }
 
 func (a *App) termSize() (cols, rows int) {
 	// The conversation pane is drawn inside a rounded border (2 cols/rows)
@@ -159,6 +167,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case repaintMsg:
 		return a, nil
+
+	case tickMsg:
+		return a, tick()
 
 	case tea.WindowSizeMsg:
 		a.width, a.height = msg.Width, msg.Height
@@ -514,6 +525,7 @@ var (
 	selDimStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Background(selBg)
 	runDotStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
 	offDotStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+	attnDotStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
 
 	paneBorder    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(accent)
 	paneBorderDim = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("238"))
@@ -583,6 +595,12 @@ func (a *App) renderItem(i int) []string {
 	dot, dotStyle := "○", offDotStyle
 	if s.Running() {
 		dot, dotStyle = "●", runDotStyle
+	}
+	if selected {
+		// The conversation is on screen: seen.
+		s.ClearAttention()
+	} else if s.NeedsAttention() {
+		dot, dotStyle = "✻", attnDotStyle
 	}
 	if a.deleting[s.Name] {
 		dot, dotStyle = "…", offDotStyle
