@@ -100,11 +100,9 @@ claude-minimal -root ~/work
 | ⌥n | New session (name → project multi-select) |
 | ⌥↑ / ⌥↓ (or Ctrl+↑/↓) | Switch session — the right pane follows instantly |
 | ⌥d | Delete session (`y` confirm · `f` force · `esc` cancel) |
-| ⌥l | Toggle focus to the session list |
-| ⌥q (or Ctrl+q) | Quit — context tails are saved; sessions resume later |
 | anything else | Typed straight into the selected session (incl. ⌥⏎ newline) |
 
-While the **list** has focus (⌥l): `j/k` or arrows navigate, `n` new, `d` delete, `q` quit, `enter`/`esc` back to the conversation.
+There is no quit key — just close the terminal window. Context tails are auto-saved every 5 seconds, so sessions resume where they left off.
 
 In the **new-session wizard**: type a name (empty = timestamp) → `enter` → `space` toggles projects → `enter` creates; `esc` goes back/cancels.
 
@@ -182,7 +180,7 @@ Deleting a session (⌥d) kills the process, runs teardown hooks, removes worktr
 ## Design notes
 
 - The right pane is a real in-process terminal emulator ([vt10x](https://github.com/hinshun/vt10x)) attached to Claude's PTY — not a tmux attach. That's what makes select-and-type instant and keeps resource usage tiny.
-- Because sessions run in-process, quitting the app stops them; that's by design. Resume is cheap: `claude --continue` restores Claude's own conversation history, and `context.md` covers anything else.
+- Because sessions run in-process, closing the app's terminal window stops them; that's by design. Resume is cheap: `claude --continue` restores Claude's own conversation history, and `context.md` covers anything else.
 - Idle footprint is the Go binary plus one PTY per running session. No daemons, no tmux servers.
 - Built with [bubbletea](https://github.com/charmbracelet/bubbletea), [lipgloss](https://github.com/charmbracelet/lipgloss), [creack/pty](https://github.com/creack/pty) and [vt10x](https://github.com/hinshun/vt10x).
 

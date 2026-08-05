@@ -51,7 +51,6 @@ type App struct {
 	sel      int
 
 	width, height int
-	focusList     bool
 	mode          mode
 	wizard        *wizard
 	confirmMsg    string
@@ -213,9 +212,6 @@ func (a *App) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	a.flash = ""
 	// Global shortcuts, never forwarded to the session.
 	switch msg.String() {
-	case "ctrl+q", "alt+q":
-		a.Shutdown()
-		return a, tea.Quit
 	case "alt+up", "ctrl+up":
 		a.moveSelection(-1)
 		return a, nil
@@ -230,33 +226,6 @@ func (a *App) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if s := a.selected(); s != nil && !a.deleting[s.Name] {
 			a.confirmMsg = ""
 			a.mode = modeConfirmDelete
-		}
-		return a, nil
-	case "alt+l":
-		a.focusList = !a.focusList
-		return a, nil
-	}
-
-	if a.focusList {
-		switch msg.String() {
-		case "up", "k":
-			a.moveSelection(-1)
-		case "down", "j":
-			a.moveSelection(1)
-		case "n":
-			a.wizard = newWizard(a.cfg)
-			a.mode = modeWizard
-			return a, a.wizard.name.Focus()
-		case "d":
-			if s := a.selected(); s != nil && !a.deleting[s.Name] {
-				a.confirmMsg = ""
-				a.mode = modeConfirmDelete
-			}
-		case "q":
-			a.Shutdown()
-			return a, tea.Quit
-		case "enter", "esc":
-			a.focusList = false
 		}
 		return a, nil
 	}
@@ -379,13 +348,11 @@ func (a *App) updateMouse(m tea.MouseMsg) (tea.Model, tea.Cmd) {
 			a.selecting = true
 			a.selAnchor = [2]int{x, y}
 			a.selPos = a.selAnchor
-			a.focusList = false
 			return a, nil
 		}
 		if m.X < leftWidth {
 			if i, ok := a.listItemAt(m.Y); ok {
 				a.sel = i
-				a.focusList = false
 			}
 		}
 	case tea.MouseActionMotion:
@@ -503,7 +470,6 @@ func (a *App) updateWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		a.mode = modeMain
-		a.focusList = false
 		a.spawn(a.sessions[a.sel])
 	}
 	return a, cmd
@@ -527,8 +493,7 @@ var (
 	offDotStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
 	attnDotStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
 
-	paneBorder    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(accent)
-	paneBorderDim = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("238"))
+	paneBorder = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(accent)
 
 	// selStyle is kept for the wizard's cursor line.
 	selStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("235")).Background(selBg)
@@ -684,7 +649,7 @@ func (a *App) viewTerminal() string {
 		if a.selecting {
 			sel = a.selRange()
 		}
-		inner = RenderTerminal(s.Proc.VT, cols, rows, !a.focusList, sel)
+		inner = RenderTerminal(s.Proc.VT, cols, rows, true, sel)
 		if s.Proc.Exited() {
 			lines := strings.Split(inner, "\n")
 			note := errStyle.Render(" [exited — press enter to restart] ")
@@ -694,11 +659,7 @@ func (a *App) viewTerminal() string {
 			inner = strings.Join(lines, "\n")
 		}
 	}
-	border := paneBorder
-	if a.focusList {
-		border = paneBorderDim
-	}
-	return border.Render(inner)
+	return paneBorder.Render(inner)
 }
 
 func centered(cols, rows int, text string) string {
@@ -790,12 +751,7 @@ func (a *App) viewStatusBar() string {
 		keyStyle.Render("⌥n") + dimStyle.Render(" new"),
 		keyStyle.Render("⌥d") + dimStyle.Render(" kill"),
 		keyStyle.Render("⌥↑/↓") + dimStyle.Render(" switch"),
-		keyStyle.Render("⌥l") + dimStyle.Render(" list"),
-		keyStyle.Render("⌥q") + dimStyle.Render(" quit"),
 	}, sep)
-	if a.focusList {
-		bar += dimStyle.Render("   [list: j/k, enter]")
-	}
 	if a.flash != "" {
 		bar += "  " + keyStyle.Render(a.flash)
 	}
