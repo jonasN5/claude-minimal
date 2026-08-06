@@ -32,7 +32,7 @@ The dashboard lists sessions on the left and shows the **live** conversation of 
 ### Pane-aware mouse
 - **Drag inside the conversation pane** to select text. The selection is scoped to the pane — it never bleeds into the session list — and is **copied to the clipboard automatically on release** (the status bar confirms with "✓ copied N chars").
 - **Click a session** in the list to switch to it.
-- **Scroll wheel** is forwarded as arrow keys, matching Terminal.app's alternate-screen behavior.
+- **Scroll wheel** scrolls the conversation through a 5000-line scrollback (any key or wheel-down returns to live); over the session list it moves the selection. Full-screen apps on the alternate screen get arrow keys instead, matching Terminal.app.
 - **⌘V paste** is forwarded to Claude as a bracketed paste (multi-line pastes stay one block).
 
 ### Pre-trusted workspaces
@@ -76,15 +76,18 @@ go install github.com/jonasN5/claude-minimal/cmd/claude-minimal@latest
 
 Or from a clone: `go build -o ~/bin/claude-minimal ./cmd/claude-minimal`
 
-### macOS app shortcut
+### macOS app
 
-To get a launchable app (Spotlight/Dock) that opens a terminal directly on your projects root:
+To get a real launchable app (Spotlight/Dock, own icon, single instance):
 
 ```bash
+brew install --cask alacritty     # self-contained terminal binary embedded into the app
 ./scripts/install-app.sh          # creates ~/Applications/Claude Minimal.app
 ```
 
-> **Option key note:** the shortcuts use Alt (⌥). In Terminal.app enable *Use Option as Meta key* (Profiles → Keyboard); in iTerm2 set Option to *Esc+*. Ctrl+↑/↓ also works for switching sessions if you prefer.
+The bundle hosts claude-minimal in an embedded copy of Alacritty, so the Dock shows Claude Minimal as the active app (not Terminal), clicking the icon focuses the running window, and Option-as-Alt is preconfigured for the ⌥ shortcuts.
+
+> **Option key note (manual runs):** when running `claude-minimal` directly in Terminal.app instead, enable *Use Option as Meta key* (Profiles → Keyboard); in iTerm2 set Option to *Esc+*. Ctrl+↑/↓ also works for switching sessions if you prefer.
 
 ## Usage
 
