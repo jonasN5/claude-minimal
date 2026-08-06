@@ -42,7 +42,7 @@ func Start(dir string, argv []string, cols, rows int, tailPath string, onData fu
 		return nil, err
 	}
 	p := &Proc{
-		VT:       vt10x.New(vt10x.WithSize(cols, rows)),
+		VT:       vt10x.New(vt10x.WithSize(cols, rows), vt10x.WithHistorySize(5000)),
 		cmd:      cmd,
 		ptmx:     ptmx,
 		onData:   onData,

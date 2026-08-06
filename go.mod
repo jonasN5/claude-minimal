@@ -29,3 +29,4 @@ require (
 	golang.org/x/sys v0.27.0 // indirect
 	golang.org/x/text v0.3.8 // indirect
 )
+replace github.com/hinshun/vt10x => ./third_party/vt10x

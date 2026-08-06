@@ -47,14 +47,42 @@ func (r *SelRange) contains(x, y int) bool {
 	return (y > r.Y1 || (y == r.Y1 && x >= r.X1)) && (y < r.Y2 || (y == r.Y2 && x <= r.X2))
 }
 
+// clampTop resolves a requested viewport top (-1 = live screen) against the
+// current scrollback bounds. liveTop is the absolute index of screen row 0.
+// Caller must hold the vt lock.
+func clampTop(vt vt10x.Terminal, scrollAbs int) (top, liveTop int) {
+	liveTop = vt.HistoryBase() + vt.HistoryLen()
+	top = liveTop
+	if scrollAbs >= 0 && scrollAbs < liveTop {
+		top = scrollAbs
+		if base := vt.HistoryBase(); top < base {
+			top = base
+		}
+	}
+	return
+}
+
+// viewCell returns the glyph at pane cell (x, y) for a viewport starting at
+// absolute line top. Rows above liveTop come from scrollback, the rest from
+// the live screen. Caller must hold the vt lock.
+func viewCell(vt vt10x.Terminal, top, liveTop, x, y int) vt10x.Glyph {
+	if abs := top + y; abs < liveTop {
+		return vt.HistoryCell(abs-vt.HistoryBase(), x)
+	}
+	return vt.Cell(x, top+y-liveTop)
+}
+
 // RenderTerminal draws the emulator screen as ANSI-styled lines.
 // The cursor cell is drawn reversed when focused; sel cells are highlighted.
-func RenderTerminal(vt vt10x.Terminal, cols, rows int, focused bool, sel *SelRange) string {
+// scrollAbs >= 0 renders a scrollback viewport starting at that absolute
+// line instead of the live screen (the cursor is hidden there).
+func RenderTerminal(vt vt10x.Terminal, cols, rows int, focused bool, sel *SelRange, scrollAbs int) string {
 	vt.Lock()
 	defer vt.Unlock()
 
+	top, liveTop := clampTop(vt, scrollAbs)
 	cursor := vt.Cursor()
-	cursorVisible := focused && vt.CursorVisible()
+	cursorVisible := focused && vt.CursorVisible() && top == liveTop
 
 	var b strings.Builder
 	b.Grow(cols * rows * 4)
@@ -62,7 +90,7 @@ func RenderTerminal(vt vt10x.Terminal, cols, rows int, focused bool, sel *SelRan
 		lastSGR := ""
 		b.WriteString("\x1b[0m")
 		for x := 0; x < cols; x++ {
-			cell := vt.Cell(x, y)
+			cell := viewCell(vt, top, liveTop, x, y)
 			// Note: vt10x already stores reverse-video cells with FG/BG
 			// swapped, so attrReverse needs no handling here.
 			fg, bg, mode := cell.FG, cell.BG, cell.Mode

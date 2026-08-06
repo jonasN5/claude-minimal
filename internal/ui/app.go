@@ -11,6 +11,7 @@ import (
 	"github.com/atotto/clipboard"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/hinshun/vt10x"
 
 	"github.com/jonasN5/claude-minimal/internal/config"
 	"github.com/jonasN5/claude-minimal/internal/session"
@@ -61,6 +62,11 @@ type App struct {
 	selecting bool
 	selAnchor [2]int
 	selPos    [2]int
+
+	// Scrollback viewport: when scrolled, the pane shows history starting at
+	// absolute line viewAbs (see vt10x HistoryBase) instead of the live screen.
+	scrolled bool
+	viewAbs  int
 
 	// Sessions currently being deleted (teardown hooks run in the background).
 	deleting map[string]bool
@@ -173,6 +179,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		a.width, a.height = msg.Width, msg.Height
 		a.selecting = false
+		a.scrolled = false
 		cols, rows := a.termSize()
 		for _, s := range a.sessions {
 			if s.Running() {
@@ -210,6 +217,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (a *App) updateMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	a.flash = ""
+	a.scrolled = false // any key returns the pane to the live screen
 	// Global shortcuts, never forwarded to the session.
 	switch msg.String() {
 	case "alt+up", "ctrl+up":
@@ -284,6 +292,14 @@ func (a *App) listItemAt(my int) (int, bool) {
 	return i, i < len(a.sessions)
 }
 
+// scrollAbs returns the viewport top for rendering: -1 while live.
+func (a *App) scrollAbs() int {
+	if a.scrolled {
+		return a.viewAbs
+	}
+	return -1
+}
+
 func (a *App) selRange() *SelRange {
 	x1, y1 := a.selAnchor[0], a.selAnchor[1]
 	x2, y2 := a.selPos[0], a.selPos[1]
@@ -303,6 +319,7 @@ func (a *App) selectionText() string {
 	vt := s.Proc.VT
 	vt.Lock()
 	defer vt.Unlock()
+	top, liveTop := clampTop(vt, a.scrollAbs())
 	var lines []string
 	for y := r.Y1; y <= r.Y2; y++ {
 		sx, ex := 0, cols-1
@@ -314,7 +331,7 @@ func (a *App) selectionText() string {
 		}
 		var b strings.Builder
 		for x := sx; x <= ex; x++ {
-			ch := vt.Cell(x, y).Char
+			ch := viewCell(vt, top, liveTop, x, y).Char
 			if ch == 0 {
 				ch = ' '
 			}
@@ -328,15 +345,7 @@ func (a *App) selectionText() string {
 func (a *App) updateMouse(m tea.MouseMsg) (tea.Model, tea.Cmd) {
 	switch m.Button {
 	case tea.MouseButtonWheelUp, tea.MouseButtonWheelDown:
-		// Match Terminal.app's alt-screen behavior: wheel = arrow keys.
-		if s := a.selected(); s != nil && s.Running() {
-			seq := "\x1b[A"
-			if m.Button == tea.MouseButtonWheelDown {
-				seq = "\x1b[B"
-			}
-			s.Proc.Write([]byte(strings.Repeat(seq, 3)))
-		}
-		return a, nil
+		return a.updateWheel(m.Button == tea.MouseButtonWheelUp, m.X)
 	}
 	switch m.Action {
 	case tea.MouseActionPress:
@@ -353,6 +362,7 @@ func (a *App) updateMouse(m tea.MouseMsg) (tea.Model, tea.Cmd) {
 		if m.X < leftWidth {
 			if i, ok := a.listItemAt(m.Y); ok {
 				a.sel = i
+				a.scrolled = false
 			}
 		}
 	case tea.MouseActionMotion:
@@ -379,10 +389,66 @@ func (a *App) updateMouse(m tea.MouseMsg) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
+// updateWheel handles mouse-wheel events: over the session list it moves the
+// selection; over the conversation pane it scrolls the scrollback viewport
+// (or, on the alternate screen, forwards arrow keys like Terminal.app does).
+func (a *App) updateWheel(up bool, mx int) (tea.Model, tea.Cmd) {
+	if mx < leftWidth {
+		if up {
+			a.moveSelection(-1)
+		} else {
+			a.moveSelection(1)
+		}
+		return a, nil
+	}
+	s := a.selected()
+	if s == nil || !s.Running() {
+		return a, nil
+	}
+	vt := s.Proc.VT
+	vt.Lock()
+	altScreen := vt.Mode()&vt10x.ModeAltScreen != 0
+	base := vt.HistoryBase()
+	liveTop := base + vt.HistoryLen()
+	vt.Unlock()
+	if altScreen {
+		// Full-screen apps handle their own scrolling: wheel = arrow keys.
+		seq := "\x1b[A"
+		if !up {
+			seq = "\x1b[B"
+		}
+		s.Proc.Write([]byte(strings.Repeat(seq, 3)))
+		return a, nil
+	}
+	const step = 3
+	pos := liveTop
+	if a.scrolled {
+		pos = a.viewAbs
+	}
+	if up {
+		pos -= step
+	} else {
+		pos += step
+	}
+	if pos < base {
+		pos = base
+	}
+	if pos >= liveTop {
+		a.scrolled = false
+	} else {
+		if !a.scrolled {
+			a.selecting = false // a live-screen selection doesn't survive scrolling
+		}
+		a.scrolled, a.viewAbs = true, pos
+	}
+	return a, nil
+}
+
 func (a *App) moveSelection(delta int) {
 	if len(a.sessions) == 0 {
 		return
 	}
+	a.scrolled = false
 	a.sel += delta
 	if a.sel < 0 {
 		a.sel = 0
@@ -649,7 +715,15 @@ func (a *App) viewTerminal() string {
 		if a.selecting {
 			sel = a.selRange()
 		}
-		inner = RenderTerminal(s.Proc.VT, cols, rows, true, sel)
+		inner = RenderTerminal(s.Proc.VT, cols, rows, true, sel, a.scrollAbs())
+		if a.scrolled {
+			lines := strings.Split(inner, "\n")
+			note := dimStyle.Render(" ↑ scrollback — wheel down or any key for live ")
+			if len(lines) > 0 {
+				lines[0] = note
+			}
+			inner = strings.Join(lines, "\n")
+		}
 		if s.Proc.Exited() {
 			lines := strings.Split(inner, "\n")
 			note := errStyle.Render(" [exited — press enter to restart] ")
