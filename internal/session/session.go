@@ -126,6 +126,63 @@ func SanitizeName(name string) string {
 	return strings.Trim(name, "-.")
 }
 
+// gitOutput runs a git command in repo and returns its trimmed stdout.
+func gitOutput(repo string, args ...string) (string, error) {
+	out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).Output()
+	return strings.TrimSpace(string(out)), err
+}
+
+// freshBaseRef returns the ref a new session branch should start from: the
+// just-fetched tip of the remote's default branch.
+//
+// Without this, `git worktree add -b` branches from whatever the shared
+// checkout has at HEAD — which is whatever branch the user last worked on,
+// at whatever commit they last pulled, often weeks stale. Sessions are meant
+// to start from current upstream, so we fetch first and name the base
+// explicitly. Returns "" when there is no usable remote (no remote, offline
+// first-time clone, detached setups), letting the caller fall back to git's
+// default of branching from HEAD.
+func freshBaseRef(repo string) string {
+	remote, err := gitOutput(repo, "remote")
+	if err != nil || remote == "" {
+		return ""
+	}
+	// Prefer origin when several remotes exist; otherwise take the first.
+	name := strings.Fields(remote)[0]
+	for _, r := range strings.Fields(remote) {
+		if r == "origin" {
+			name = r
+			break
+		}
+	}
+	// Fetch so the default branch we resolve below is actually current. A
+	// failure here (offline) is not fatal: a stale remote ref still beats an
+	// unrelated local HEAD, and the existence check downstream guards it.
+	_ = exec.Command("git", "-C", repo, "fetch", "--quiet", name).Run()
+
+	// <remote>/HEAD records the remote's default branch, but it is unset in
+	// clones made with --single-branch and in some older clones, so fall back
+	// to asking the remote and then to the conventional names.
+	var candidates []string
+	if head, err := gitOutput(repo, "symbolic-ref", "--quiet", "refs/remotes/"+name+"/HEAD"); err == nil && head != "" {
+		candidates = append(candidates, strings.TrimPrefix(head, "refs/remotes/"))
+	}
+	if out, err := gitOutput(repo, "remote", "set-head", name, "--auto"); err == nil && out != "" {
+		// Prints e.g. "origin/HEAD set to master"; re-resolve rather than parse.
+		if head, err := gitOutput(repo, "symbolic-ref", "--quiet", "refs/remotes/"+name+"/HEAD"); err == nil && head != "" {
+			candidates = append(candidates, strings.TrimPrefix(head, "refs/remotes/"))
+		}
+	}
+	candidates = append(candidates, name+"/main", name+"/master")
+
+	for _, c := range candidates {
+		if err := exec.Command("git", "-C", repo, "rev-parse", "--verify", "--quiet", c+"^{commit}").Run(); err == nil {
+			return c
+		}
+	}
+	return ""
+}
+
 // Create builds a new session: directory, git worktrees, generated CLAUDE.md
 // and setup script. Hooks are NOT run here — they stream inside the session
 // pane when the process starts.
@@ -157,7 +214,11 @@ func (st *Store) Create(name string, projects []config.Project) (*Session, error
 		if p.UseWorktree() {
 			ref.Branch = "session/" + name
 			ref.WorktreePath = filepath.Join(s.Workspace(), p.Name)
-			cmd := exec.Command("git", "-C", p.Path, "worktree", "add", "-b", ref.Branch, ref.WorktreePath)
+			args := []string{"-C", p.Path, "worktree", "add", "-b", ref.Branch, ref.WorktreePath}
+			if base := freshBaseRef(p.Path); base != "" {
+				args = append(args, base)
+			}
+			cmd := exec.Command("git", args...)
 			if out, err := cmd.CombinedOutput(); err != nil {
 				cleanup()
 				return nil, fmt.Errorf("worktree for %s: %v\n%s", p.Name, err, out)
@@ -228,6 +289,14 @@ func (s *Session) writeSetupScript() error {
 
 // LaunchArgv returns the command started in the session PTY. First launch runs
 // setup hooks then execs Claude; later launches resume the conversation.
+//
+// CLAUDE_MINIMAL_SESSION is exported for the whole session, not just the setup
+// script: project hooks use it to derive per-session resources (ports, docker
+// compose project names, cloned databases), and Claude Code re-runs those hooks
+// on every start. Exporting it only around setup would make the first start and
+// every later start disagree about the session's identity. It also cannot be
+// inferred from the worktree path, which is named after the project — the same
+// name in every session.
 func (s *Session) LaunchArgv(cfg *config.Config) []string {
 	claude := cfg.ClaudeCmd
 	for _, a := range cfg.ClaudeArgs {
@@ -239,6 +308,7 @@ func (s *Session) LaunchArgv(cfg *config.Config) []string {
 	} else {
 		script = fmt.Sprintf("exec %s --continue", claude)
 	}
+	script = fmt.Sprintf("CLAUDE_MINIMAL_SESSION=%s; export CLAUDE_MINIMAL_SESSION; %s", shQuote(s.Name), script)
 	return []string{"/bin/sh", "-c", script}
 }
 

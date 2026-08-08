@@ -1,4 +1,7 @@
-claude-minimal
+# The built binary at the repo root. Anchored: an unanchored pattern also
+# matches the cmd/claude-minimal/ directory, which silently excluded the
+# program's entrypoint from the repository.
+/claude-minimal
 /dist/
 *.log
 .DS_Store
