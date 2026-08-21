@@ -70,6 +70,50 @@ func TestRenderTerminalScrollback(t *testing.T) {
 	_ = RenderTerminal(vt, 20, 5, false, nil, 9999)
 }
 
+// historyLine reads back one history line as trimmed text.
+// Caller must hold the vt lock.
+func historyLine(vt vt10x.Terminal, i int) string {
+	var b strings.Builder
+	for x := 0; x < 20; x++ {
+		b.WriteRune(vt.HistoryCell(i, x).Char)
+	}
+	return strings.TrimRight(b.String(), " \x00")
+}
+
+// Ink-style repaints (frame taller than the window) erase screen+scrollback
+// with CSI 2J / 3J and rewrite the whole frame each tick. The overflow that
+// scrolls off must end up in history once, not once per repaint.
+func TestEraseScrollbackRepaintCycle(t *testing.T) {
+	vt := feedLines(t, 12) // history now holds line1..line8
+	var frame strings.Builder
+	frame.WriteString("\x1b[2J\x1b[3J\x1b[H")
+	for i := 1; i <= 7; i++ {
+		fmt.Fprintf(&frame, "F%d\r\n", i)
+	}
+	for r := 0; r < 3; r++ {
+		fmt.Fprint(vt, frame.String())
+	}
+
+	vt.Lock()
+	defer vt.Unlock()
+	// 8 old lines + the 3 frame lines that overflow a 5-row screen.
+	if n := vt.HistoryLen(); n != 11 {
+		t.Fatalf("HistoryLen = %d, want 11 (repaints must not accumulate)", n)
+	}
+	dupes := 0
+	for i := 0; i < vt.HistoryLen(); i++ {
+		if historyLine(vt, i) == "F1" {
+			dupes++
+		}
+	}
+	if dupes != 1 {
+		t.Fatalf("frame line F1 appears %d times in history, want 1", dupes)
+	}
+	if got := historyLine(vt, 0); got != "line1" {
+		t.Fatalf("pre-repaint history lost: oldest line = %q, want line1", got)
+	}
+}
+
 func TestScrollbackAltScreenNotCaptured(t *testing.T) {
 	vt := vt10x.New(vt10x.WithSize(20, 5), vt10x.WithHistorySize(100))
 	fmt.Fprint(vt, "\x1b[?1049h") // enter alt screen

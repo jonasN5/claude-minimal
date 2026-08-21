@@ -4,6 +4,7 @@ import (
 	"io"
 	"log"
 	"sync"
+	"time"
 )
 
 const (
@@ -109,12 +110,19 @@ type State struct {
 	history     []line
 	historyBase int
 	historyMax  int
+
+	// Repaint-cycle tracking for CSI 3 J (erase scrollback): clearMark is
+	// the absolute history index where the current erase cycle started
+	// (-1 when no cycle is active), lastEraseSB when the last erase came in.
+	clearMark   int
+	lastEraseSB time.Time
 }
 
 func newState(w io.Writer) *State {
 	return &State{
 		w:             w,
 		colorOverride: make(map[Color]Color),
+		clearMark:     -1,
 	}
 }
 
@@ -509,6 +517,39 @@ func (t *State) scrollDown(orig, n int) {
 	}
 
 	// TODO: selection scroll
+}
+
+// eraseCycleWindow bounds how far apart two CSI 3 J erases can be while
+// still counting as the same repaint cycle.
+const eraseCycleWindow = 3 * time.Second
+
+// timeNow is swappable in tests.
+var timeNow = time.Now
+
+// eraseScrollback implements CSI 3 J. Full-screen repainters (ink, when a
+// frame outgrows the window) erase screen+scrollback and rewrite everything
+// on every frame, re-scrolling identical lines into history each time. A
+// real terminal drops its whole scrollback here; instead, successive erases
+// within eraseCycleWindow are treated as one repaint cycle and history is
+// rolled back to where the cycle started — one retained copy of the
+// repainted content, older history preserved.
+func (t *State) eraseScrollback() {
+	if t.historyMax == 0 {
+		return
+	}
+	now := timeNow()
+	if t.clearMark >= 0 && now.Sub(t.lastEraseSB) < eraseCycleWindow {
+		n := t.clearMark - t.historyBase
+		if n < 0 {
+			n = 0
+		}
+		if n <= len(t.history) {
+			t.history = t.history[:n]
+		}
+	} else {
+		t.clearMark = t.historyBase + len(t.history)
+	}
+	t.lastEraseSB = now
 }
 
 func (t *State) scrollUp(orig, n int) {
