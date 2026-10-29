@@ -28,8 +28,8 @@ func TestRotationParksAndResumes(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.Started = true
-	a := &App{cfg: cfg, pool: account.NewPool(cfg.DataDir, []string{"a", "b"}), sessions: []*session.Session{s},
-		width: 120, height: 40, notify: make(chan struct{}, 1)}
+	a := &App{cfg: cfg, store: session.NewStore(cfg), pool: account.NewPool(cfg.DataDir, []string{"a", "b"}),
+		sessions: []*session.Session{s}, width: 120, height: 40, notify: make(chan struct{}, 1)}
 	t.Cleanup(func() {
 		if s.Proc != nil {
 			s.Proc.Kill()
@@ -55,6 +55,14 @@ func TestRotationParksAndResumes(t *testing.T) {
 	a.spawn(s)
 	if s.Account != "a" || !s.Running() {
 		t.Fatalf("launch: account %q running %v (%s)", s.Account, s.Running(), a.errMsg)
+	}
+
+	// Creating or deleting another session reloads the list from disk; the
+	// running session must keep its account and limit watch.
+	a.reload()
+	s = a.sessions[0]
+	if s.Account != "a" || s.Limit == nil || !s.Running() {
+		t.Fatalf("after reload: account %q watching %v running %v", s.Account, s.Limit != nil, s.Running())
 	}
 
 	hitLimit()

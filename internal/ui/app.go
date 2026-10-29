@@ -570,7 +570,10 @@ func (a *App) reload() {
 	fresh, _ := a.store.List()
 	for _, s := range fresh {
 		if o, ok := old[s.Name]; ok {
-			s.Proc = o.Proc
+			// Carry over all runtime state, not just the process: dropping
+			// the limit watch would silently stop account rotation for every
+			// running session whenever another session is created or deleted.
+			s.Proc, s.Account, s.Limit, s.Parked = o.Proc, o.Account, o.Limit, o.Parked
 		}
 	}
 	a.sessions = fresh
