@@ -13,6 +13,11 @@ type csiEscape struct {
 	args []int
 	mode byte
 	priv bool
+	// marker is the private-parameter prefix ('<', '=', '>' or '?'), if any.
+	marker byte
+	// inter is set when intermediate bytes (0x20-0x2F, e.g. "CSI 2 SP q")
+	// precede the final byte.
+	inter bool
 }
 
 func (c *csiEscape) reset() {
@@ -20,6 +25,8 @@ func (c *csiEscape) reset() {
 	c.args = c.args[:0]
 	c.mode = 0
 	c.priv = false
+	c.marker = 0
+	c.inter = false
 }
 
 func (c *csiEscape) put(b byte) bool {
@@ -38,11 +45,16 @@ func (c *csiEscape) parse() {
 	}
 	s := string(c.buf)
 	c.args = c.args[:0]
-	if s[0] == '?' {
-		c.priv = true
+	if strings.IndexByte("<=>?", s[0]) >= 0 {
+		c.marker = s[0]
+		c.priv = s[0] == '?'
 		s = s[1:]
 	}
 	s = s[:len(s)-1]
+	if i := strings.IndexFunc(s, func(r rune) bool { return r >= 0x20 && r <= 0x2F }); i >= 0 {
+		c.inter = true
+		s = s[:i]
+	}
 	ss := strings.Split(s, ";")
 	for _, p := range ss {
 		i, err := strconv.Atoi(p)
@@ -68,6 +80,15 @@ func (c *csiEscape) maxarg(i, def int) int {
 
 func (t *State) handleCSI() {
 	c := &t.csi
+	// Sequences with a '<', '=' or '>' prefix or intermediate bytes are
+	// extensions none of the cases below implement: kitty keyboard
+	// push/pop ("CSI > 1 u", "CSI < u"), modifyOtherKeys ("CSI > 4 m"),
+	// XTVERSION ("CSI > 0 q"), cursor style ("CSI 2 SP q"). Handling them
+	// by final byte alone runs the wrong command — "CSI < u" would restore
+	// the cursor, "CSI > 4 m" would turn on underline.
+	if (c.marker != 0 && c.marker != '?') || c.inter {
+		return
+	}
 	switch c.mode {
 	default:
 		goto unknown
@@ -180,8 +201,17 @@ func (t *State) handleCSI() {
 			t.moveAbsTo(0, 0)
 		}
 	case 's': // DECSC - save cursor position (ANSI.SYS)
+		if c.priv {
+			goto unknown // XTSAVE "CSI ? Pm s" saves modes, not the cursor
+		}
 		t.saveCursor()
 	case 'u': // DECRC - restore cursor position (ANSI.SYS)
+		if c.priv {
+			// Kitty keyboard query "CSI ? u". Claude Code sends it after
+			// every startup; restoring the cursor here sent all later
+			// relative cursor moves to the top of the screen.
+			goto unknown
+		}
 		t.restoreCursor()
 	}
 	return

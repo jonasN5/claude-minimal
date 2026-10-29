@@ -20,6 +20,9 @@ func main() {
 	// Launched from a .app bundle, we inherit launchd's bare PATH; sessions
 	// would then run setup hooks that can't find docker, npm or poetry.
 	shellenv.Repair()
+	// Started from inside a Claude session, we'd pass its child-session
+	// markers to every session and they would stop saving transcripts.
+	shellenv.StripParentClaude()
 
 	cfg, err := config.Load(*root)
 	if err != nil {
