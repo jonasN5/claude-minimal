@@ -123,3 +123,44 @@ func TestEnsureProgressNote(t *testing.T) {
 		t.Fatalf("CLAUDE.md = %q", data)
 	}
 }
+
+func TestEndedOnLimit(t *testing.T) {
+	cfgDir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", cfgDir)
+	workspace := "/Users/x/.claude-minimal/sessions/s1/workspace"
+	dir := filepath.Join(cfgDir, "projects", "-Users-x--claude-minimal-sessions-s1-workspace")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if EndedOnLimit(workspace) {
+		t.Fatal("no transcript: reported as limited")
+	}
+	write := func(name, content string, mod time.Time) {
+		t.Helper()
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, mod, mod); err != nil {
+			t.Fatal(err)
+		}
+	}
+	prompt := `{"type":"user","message":{"content":"fix it"}}` + "\n"
+	meta := `{"type":"last-prompt","lastPrompt":"fix it"}` + "\n"
+	old := time.Now().Add(-time.Hour)
+
+	write("a.jsonl", prompt+limitLine+meta, old)
+	if !EndedOnLimit(workspace) {
+		t.Fatal("limit followed by metadata: not reported")
+	}
+	write("a.jsonl", limitLine+prompt, old)
+	if EndedOnLimit(workspace) {
+		t.Fatal("conversation went on after the limit: reported")
+	}
+	// Only the most recent transcript counts.
+	write("a.jsonl", prompt+limitLine, old)
+	write("b.jsonl", prompt, time.Now())
+	if EndedOnLimit(workspace) {
+		t.Fatal("older transcript's limit reported")
+	}
+}

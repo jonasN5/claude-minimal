@@ -92,10 +92,18 @@ func New(cfg *config.Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	pool := account.NewPool(cfg.DataDir, cfg.Accounts)
+	if pool != nil {
+		// Parking is in memory; sessions that were cut off by a usage limit
+		// before a restart are parked again and resume at the next reset.
+		for _, s := range sessions {
+			s.Parked = s.Started && session.EndedOnLimit(s.Workspace())
+		}
+	}
 	return &App{
 		cfg:      cfg,
 		store:    store,
-		pool:     account.NewPool(cfg.DataDir, cfg.Accounts),
+		pool:     pool,
 		sessions: sessions,
 		notify:   make(chan struct{}, 1),
 		deleting: map[string]bool{},

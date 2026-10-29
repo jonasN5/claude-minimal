@@ -104,6 +104,54 @@ func (w *LimitWatch) Poll(now time.Time) (Limit, bool) {
 	return found, hit
 }
 
+// EndedOnLimit reports whether the session's latest transcript ends on a
+// usage-limit error, i.e. Claude stopped mid-task waiting for a reset. It
+// lets a restarted app re-park sessions whose in-memory parking was lost.
+func EndedOnLimit(workspace string) bool {
+	dir := transcriptDir(workspace)
+	var latest string
+	var latestMod time.Time
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		if info, err := e.Info(); err == nil && info.ModTime().After(latestMod) {
+			latest, latestMod = e.Name(), info.ModTime()
+		}
+	}
+	if latest == "" {
+		return false
+	}
+	f, err := os.Open(filepath.Join(dir, latest))
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	const tail = 256 << 10
+	off := max(info.Size()-tail, 0)
+	buf, err := io.ReadAll(io.NewSectionReader(f, off, info.Size()-off))
+	if err != nil {
+		return false
+	}
+	lines := bytes.Split(buf, []byte("\n"))
+	for i := len(lines) - 1; i >= 0; i-- {
+		var entry struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(lines[i], &entry) != nil || (entry.Type != "user" && entry.Type != "assistant") {
+			continue // partial first line, metadata, summaries
+		}
+		_, ok := limitMessage(lines[i])
+		return ok
+	}
+	return false
+}
+
 func limitMessage(line []byte) (string, bool) {
 	if !bytes.Contains(line, []byte("usage_limit_reached")) {
 		return "", false
