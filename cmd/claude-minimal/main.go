@@ -26,6 +26,9 @@ func main() {
 		fmt.Fprintln(os.Stderr, "config error:", err)
 		os.Exit(1)
 	}
+	if args := flag.Args(); len(args) > 0 {
+		os.Exit(runCommand(cfg, args))
+	}
 	app, err := ui.New(cfg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

@@ -52,12 +52,12 @@ func TestCreateAndDelete(t *testing.T) {
 	}
 
 	// First launch runs setup then claude; second uses --continue.
-	argv := s.LaunchArgv(cfg)
+	argv := s.LaunchArgv(cfg, "")
 	if !strings.Contains(argv[2], "setup.sh") {
 		t.Errorf("first launch should run setup: %v", argv)
 	}
 	s.MarkStarted()
-	argv = s.LaunchArgv(cfg)
+	argv = s.LaunchArgv(cfg, "")
 	if !strings.Contains(argv[2], "--continue") {
 		t.Errorf("second launch should resume: %v", argv)
 	}
@@ -111,7 +111,7 @@ func TestProcTail(t *testing.T) {
 	// The brief sleep keeps the PTY open long enough for the reader to drain
 	// (macOS can drop buffered PTY output when the child exits instantly);
 	// real sessions are long-lived interactive processes.
-	p, err := Start(tmp, []string{"/bin/sh", "-c", "printf 'hello \\033[31mworld\\033[0m\\r\\n'; sleep 0.3"}, 80, 24, tail,
+	p, err := Start(tmp, []string{"/bin/sh", "-c", "printf 'hello \\033[31mworld\\033[0m\\r\\n'; sleep 0.3"}, nil, 80, 24, tail,
 		func() { updates <- struct{}{} })
 	if err != nil {
 		t.Fatal(err)
@@ -260,7 +260,7 @@ func TestLaunchArgvExportsSessionName(t *testing.T) {
 	// first launch and on every resumed launch, or the two disagree.
 	for _, started := range []bool{false, true} {
 		s.Started = started
-		script := s.LaunchArgv(cfg)[2]
+		script := s.LaunchArgv(cfg, "")[2]
 		if !strings.Contains(script, "CLAUDE_MINIMAL_SESSION='port-test'") {
 			t.Errorf("started=%v: session name not exported: %s", started, script)
 		}

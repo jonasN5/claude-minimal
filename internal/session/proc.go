@@ -31,12 +31,13 @@ type Proc struct {
 	done     chan struct{}
 }
 
-// Start launches argv in a PTY of the given size, in dir.
-// onData is called (from a goroutine) whenever the screen may have changed.
-func Start(dir string, argv []string, cols, rows int, tailPath string, onData func()) (*Proc, error) {
+// Start launches argv in a PTY of the given size, in dir, with env added to
+// the inherited environment. onData is called (from a goroutine) whenever the
+// screen may have changed.
+func Start(dir string, argv, env []string, cols, rows int, tailPath string, onData func()) (*Proc, error) {
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	cmd.Env = append(append(os.Environ(), "TERM=xterm-256color"), env...)
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
 	if err != nil {
 		return nil, err

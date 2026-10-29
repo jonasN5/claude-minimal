@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/hinshun/vt10x"
 
+	"github.com/jonasN5/claude-minimal/internal/account"
 	"github.com/jonasN5/claude-minimal/internal/config"
 	"github.com/jonasN5/claude-minimal/internal/session"
 )
@@ -47,6 +48,7 @@ type deleteDoneMsg struct {
 type App struct {
 	cfg   *config.Config
 	store *session.Store
+	pool  *account.Pool // nil when account rotation is not configured
 
 	sessions []*session.Session
 	sel      int
@@ -93,6 +95,7 @@ func New(cfg *config.Config) (*App, error) {
 	return &App{
 		cfg:      cfg,
 		store:    store,
+		pool:     account.NewPool(cfg.DataDir, cfg.Accounts),
 		sessions: sessions,
 		notify:   make(chan struct{}, 1),
 		deleting: map[string]bool{},
@@ -150,22 +153,72 @@ func (a *App) selected() *session.Session {
 	return nil
 }
 
-func (a *App) spawn(s *session.Session) {
+func (a *App) spawn(s *session.Session) { a.launch(s, "") }
+
+// launch starts Claude for s on the pool's current account. A non-empty
+// prompt is submitted to the resumed conversation.
+func (a *App) launch(s *session.Session, prompt string) {
 	cols, rows := a.termSize()
 	// User-approved: pre-trust only workspaces this tool created itself, so
 	// Claude doesn't show the folder-trust dialog for every new session.
 	if err := session.EnsureTrusted(s.Workspace()); err != nil {
 		a.errMsg = "pre-trust failed: " + err.Error()
 	}
-	argv := s.LaunchArgv(a.cfg)
-	proc, err := session.Start(s.Workspace(), argv, cols, rows, s.ContextFile(), a.requestRepaint)
+	_ = s.EnsureProgressNote()
+	var env []string
+	s.Account, s.Limit = "", nil
+	warn := ""
+	if a.pool != nil {
+		now := time.Now()
+		name, ok := a.pool.Current(now)
+		if !ok {
+			warn = fmt.Sprintf("all accounts at usage limit — using %s (resets %s)", name, a.pool.NextReset(now).Format("Mon 15:04"))
+		}
+		s.Account, env = name, a.pool.Env(name)
+		// Armed before the process starts, so only errors from this run count.
+		s.Limit = session.NewLimitWatch(s.Workspace())
+	}
+	argv := s.LaunchArgv(a.cfg, prompt)
+	proc, err := session.Start(s.Workspace(), argv, env, cols, rows, s.ContextFile(), a.requestRepaint)
 	if err != nil {
 		a.errMsg = "launch failed: " + err.Error()
 		return
 	}
 	s.Proc = proc
 	s.MarkStarted()
-	a.errMsg = ""
+	a.errMsg = warn
+}
+
+// checkLimits relaunches sessions whose account hit its usage limit on the
+// next available account, resuming the same conversation. Other sessions on
+// the limited account keep running and rotate when they hit the limit
+// themselves.
+func (a *App) checkLimits() {
+	if a.pool == nil {
+		return
+	}
+	now := time.Now()
+	for _, s := range a.sessions {
+		if !s.Running() || s.Limit == nil {
+			continue
+		}
+		lim, hit := s.Limit.Poll(now)
+		if !hit {
+			continue
+		}
+		prev := s.Account
+		a.pool.MarkExhausted(prev, lim.Resets)
+		if _, ok := a.pool.Current(now); !ok {
+			// Nowhere to go: leave the session as is and stop watching it.
+			s.Limit = nil
+			a.errMsg = fmt.Sprintf("%s: every account is at its usage limit (first reset %s)",
+				s.Name, a.pool.NextReset(now).Format("Mon 15:04"))
+			continue
+		}
+		s.Proc.Kill()
+		a.launch(s, a.cfg.ResumePrompt)
+		a.flash = fmt.Sprintf("%s: %s hit its limit → resumed on %s", s.Name, prev, s.Account)
+	}
 }
 
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -174,6 +227,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case tickMsg:
+		a.checkLimits()
 		return a, tick()
 
 	case tea.WindowSizeMsg:
@@ -651,6 +705,9 @@ func (a *App) renderItem(i int) []string {
 			names[j] = p.Name
 		}
 		proj = strings.Join(names, ", ")
+	}
+	if s.Running() && s.Account != "" {
+		proj = "@" + s.Account + " · " + proj
 	}
 	line2 := strings.Repeat(" ", len(num)) + truncate(proj, leftWidth-len(num)-2)
 	pad2 := leftWidth - lipgloss.Width(line2)

@@ -45,6 +45,13 @@ type Config struct {
 	ClaudeArgs []string `toml:"claude_args"`
 	// DataDir holds session state (default ~/.claude-minimal).
 	DataDir string `toml:"data_dir"`
+	// Accounts are Claude logins to rotate through when a session hits its
+	// usage limit. "default" is Claude Code's standard login; every other
+	// name gets its own credential slot (sign in with `claude-minimal login
+	// <name>`). Empty disables rotation.
+	Accounts []string `toml:"accounts"`
+	// ResumePrompt is sent when a session is relaunched on another account.
+	ResumePrompt string `toml:"resume_prompt"`
 
 	Projects []Project `toml:"project"`
 }
@@ -89,6 +96,10 @@ func Load(rootOverride string) (*Config, error) {
 		cfg.DataDir = filepath.Join(home, ".claude-minimal")
 	}
 	cfg.DataDir = expand(cfg.DataDir)
+	if cfg.ResumePrompt == "" {
+		cfg.ResumePrompt = "The previous Claude account hit its usage limit, so this session was relaunched on another account. " +
+			"Re-read ../progress.md, then continue the task exactly where you left off."
+	}
 	for i := range cfg.Projects {
 		cfg.Projects[i].Path = expand(cfg.Projects[i].Path)
 		if cfg.Projects[i].Name == "" {

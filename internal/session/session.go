@@ -3,6 +3,7 @@
 package session
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -39,6 +40,9 @@ type Session struct {
 	Meta
 	Dir  string // <data>/sessions/<name>
 	Proc *Proc  // nil when not running
+
+	Account string      // account the running process uses ("" without rotation)
+	Limit   *LimitWatch // watches the running process for usage limits
 }
 
 // Workspace is the directory Claude runs in.
@@ -46,6 +50,31 @@ func (s *Session) Workspace() string { return filepath.Join(s.Dir, "workspace") 
 
 // ContextFile is the persisted conversation tail, used to resume with context.
 func (s *Session) ContextFile() string { return filepath.Join(s.Dir, "context.md") }
+
+// progressNote asks Claude to keep its own progress log in the session
+// directory, so a relaunch (e.g. on another account after a usage limit) can
+// pick up the task even if the conversation is compacted or cut mid-turn.
+const progressNote = "\n## Progress log\n\n" +
+	"Keep `../progress.md` up to date as you work: the current goal, what is done, what is in flight (files touched, commands running), and the next concrete steps. " +
+	"Update it after each meaningful step and before any long-running operation. " +
+	"This session can be relaunched at any moment on another Claude account; on resume, read `../progress.md` first.\n"
+
+// EnsureProgressNote appends the progress-log instruction to the workspace
+// CLAUDE.md of sessions created before it existed, preserving any edits.
+func (s *Session) EnsureProgressNote() error {
+	path := filepath.Join(s.Workspace(), "CLAUDE.md")
+	data, err := os.ReadFile(path)
+	if err != nil || bytes.Contains(data, []byte("../progress.md")) {
+		return nil
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString(progressNote)
+	return err
+}
 
 // Running reports whether the session has a live process.
 func (s *Session) Running() bool { return s.Proc != nil && !s.Proc.Exited() }
@@ -268,6 +297,7 @@ func (s *Session) writeClaudeMD() error {
 		}
 	}
 	b.WriteString("\nIf this session was resumed and earlier context is missing, the tail of the previous conversation is saved at `../context.md`.\n")
+	b.WriteString(progressNote)
 	return os.WriteFile(filepath.Join(s.Workspace(), "CLAUDE.md"), []byte(b.String()), 0o644)
 }
 
@@ -297,7 +327,10 @@ func (s *Session) writeSetupScript() error {
 // every later start disagree about the session's identity. It also cannot be
 // inferred from the worktree path, which is named after the project — the same
 // name in every session.
-func (s *Session) LaunchArgv(cfg *config.Config) []string {
+//
+// A non-empty prompt is submitted as the first message of a resumed
+// conversation (used after switching accounts).
+func (s *Session) LaunchArgv(cfg *config.Config, prompt string) []string {
 	claude := cfg.ClaudeCmd
 	for _, a := range cfg.ClaudeArgs {
 		claude += " " + shQuote(a)
@@ -307,6 +340,9 @@ func (s *Session) LaunchArgv(cfg *config.Config) []string {
 		script = fmt.Sprintf("sh %s; exec %s", shQuote(filepath.Join(s.Dir, "setup.sh")), claude)
 	} else {
 		script = fmt.Sprintf("exec %s --continue", claude)
+		if prompt != "" {
+			script += " " + shQuote(prompt)
+		}
 	}
 	script = fmt.Sprintf("CLAUDE_MINIMAL_SESSION=%s; export CLAUDE_MINIMAL_SESSION; %s", shQuote(s.Name), script)
 	return []string{"/bin/sh", "-c", script}

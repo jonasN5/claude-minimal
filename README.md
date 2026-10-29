@@ -23,6 +23,24 @@ Each project can declare, in the config:
 
 Hooks receive `CLAUDE_MINIMAL_SESSION=<name>` in their environment and run with stdin from `/dev/null` — use non-interactive flags (`--force`, `--yes`); there is no TTY to answer prompts on.
 
+### Account rotation on usage limits
+List several Claude logins in the config and a session that hits its usage limit is relaunched on the next available account automatically — same conversation, no `/login` dance:
+
+```toml
+accounts = ["default", "b", "c"]   # "default" = your existing login
+# resume_prompt = "..."            # optional: message sent after a switch
+```
+
+Sign in each extra account once: `claude-minimal login b`, `claude-minimal login c`. `claude-minimal accounts` shows which login each slot holds and which are limited until when.
+
+How it works:
+- Each account is a separate Claude Code **credential slot** (`CLAUDE_SECURESTORAGE_CONFIG_DIR`, one keychain item per account). The config directory `~/.claude` stays shared, so transcripts, settings, hooks and `claude --continue` are identical on every account — switching never loses history.
+- claude-minimal tails each running session's transcript for Claude Code's `usage_limit_reached` error (only entries written after launch, so a limit message re-rendered by `--continue` never retriggers). The account is marked limited until the reset time in the message (`resets 3:40pm (Europe/Paris)`), persisted in `<data_dir>/accounts/state.json`.
+- The session is then relaunched with `claude --continue "<resume_prompt>"` on the next available account. Other sessions keep running and rotate when they hit the limit themselves; new sessions start on the current account. The list shows each running session's `@account`.
+- If every account is limited, the session is left as is and the status bar shows the first reset time.
+
+Every workspace `CLAUDE.md` also asks Claude to keep `../progress.md` (goal, done, in flight, next steps) up to date, so a session cut off mid-turn resumes from an explicit checkpoint, not just the transcript. Sessions created before this feature get the note appended on their next launch.
+
 ### Instant resume, no pause/resume
 The tail of every conversation is ANSI-stripped and auto-saved to a `context.md` file in the session directory (every 5 seconds and on exit). Quit whenever you like: selecting a stopped session and pressing a key relaunches it with `claude --continue`, which restores Claude's own conversation history — `context.md` covers anything else and is referenced from the workspace `CLAUDE.md`.
 
