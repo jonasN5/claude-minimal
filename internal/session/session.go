@@ -43,6 +43,9 @@ type Session struct {
 
 	Account string      // account the running process uses ("" without rotation)
 	Limit   *LimitWatch // watches the running process for usage limits
+	// Parked is set when the session hit a limit while every account was
+	// limited; it is relaunched as soon as one of them resets.
+	Parked bool
 }
 
 // Workspace is the directory Claude runs in.

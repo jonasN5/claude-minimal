@@ -166,7 +166,7 @@ func (a *App) launch(s *session.Session, prompt string) {
 	}
 	_ = s.EnsureProgressNote()
 	var env []string
-	s.Account, s.Limit = "", nil
+	s.Account, s.Limit, s.Parked = "", nil, false
 	warn := ""
 	if a.pool != nil {
 		now := time.Now()
@@ -189,16 +189,31 @@ func (a *App) launch(s *session.Session, prompt string) {
 	a.errMsg = warn
 }
 
+// resetGrace delays resuming past a limit's stated reset, which is only
+// minute-precise ("resets 3:40pm").
+const resetGrace = time.Minute
+
 // checkLimits relaunches sessions whose account hit its usage limit on the
 // next available account, resuming the same conversation. Other sessions on
 // the limited account keep running and rotate when they hit the limit
-// themselves.
+// themselves. When every account is limited the session is parked, and
+// resumed once the first account resets, so work continues unattended.
 func (a *App) checkLimits() {
 	if a.pool == nil {
 		return
 	}
 	now := time.Now()
 	for _, s := range a.sessions {
+		if s.Parked {
+			if _, ok := a.pool.Current(now); ok {
+				if s.Running() {
+					s.Proc.Kill()
+				}
+				a.launch(s, a.cfg.ResumePrompt)
+				a.flash = fmt.Sprintf("%s: limit reset → resumed on %s", s.Name, s.Account)
+			}
+			continue
+		}
 		if !s.Running() || s.Limit == nil {
 			continue
 		}
@@ -207,11 +222,11 @@ func (a *App) checkLimits() {
 			continue
 		}
 		prev := s.Account
-		a.pool.MarkExhausted(prev, lim.Resets)
+		a.pool.MarkExhausted(prev, lim.Resets.Add(resetGrace))
 		if _, ok := a.pool.Current(now); !ok {
-			// Nowhere to go: leave the session as is and stop watching it.
-			s.Limit = nil
-			a.errMsg = fmt.Sprintf("%s: every account is at its usage limit (first reset %s)",
+			// Nowhere to go yet: leave the limit message on screen and wait.
+			s.Limit, s.Parked = nil, true
+			a.errMsg = fmt.Sprintf("%s: every account is at its usage limit — resuming at %s",
 				s.Name, a.pool.NextReset(now).Format("Mon 15:04"))
 			continue
 		}
@@ -706,7 +721,9 @@ func (a *App) renderItem(i int) []string {
 		}
 		proj = strings.Join(names, ", ")
 	}
-	if s.Running() && s.Account != "" {
+	if s.Parked {
+		proj = "⏸ until " + a.pool.NextReset(time.Now()).Format("15:04") + " · " + proj
+	} else if s.Running() && s.Account != "" {
 		proj = "@" + s.Account + " · " + proj
 	}
 	line2 := strings.Repeat(" ", len(num)) + truncate(proj, leftWidth-len(num)-2)
