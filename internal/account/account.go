@@ -10,6 +10,8 @@
 package account
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -77,6 +79,18 @@ func (p *Pool) SlotDir(name string) string {
 		return ""
 	}
 	return filepath.Join(p.dir, name)
+}
+
+// KeychainService is the macOS keychain item Claude Code stores the account's
+// login under: "Claude Code-credentials", suffixed with a hash of the slot
+// directory for non-default slots.
+func (p *Pool) KeychainService(name string) string {
+	const base = "Claude Code-credentials"
+	if name == DefaultName {
+		return base
+	}
+	sum := sha256.Sum256([]byte(p.SlotDir(name)))
+	return base + "-" + hex.EncodeToString(sum[:])[:8]
 }
 
 // Env returns the environment selecting the account's credential slot.

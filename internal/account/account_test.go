@@ -50,6 +50,12 @@ func TestEnv(t *testing.T) {
 	if len(env) != 1 || !strings.HasPrefix(env[0], SlotEnv+"=") || !strings.HasSuffix(env[0], "/accounts/b") {
 		t.Fatalf("b env = %v", env)
 	}
+	if got := p.KeychainService("default"); got != "Claude Code-credentials" {
+		t.Fatalf("default keychain service = %q", got)
+	}
+	if got := p.KeychainService("b"); !strings.HasPrefix(got, "Claude Code-credentials-") || len(got) != len("Claude Code-credentials-")+8 {
+		t.Fatalf("b keychain service = %q", got)
+	}
 	if NewPool(t.TempDir(), nil) != nil {
 		t.Fatal("empty account list must disable rotation")
 	}

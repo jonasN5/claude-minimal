@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"slices"
@@ -61,20 +62,44 @@ func runCommand(cfg *config.Config, args []string) int {
 	return 2
 }
 
-// authEmail asks Claude Code which login an account's credential slot holds.
+// authEmail reports which login an account's credential slot holds.
+//
+// `claude auth status` can't answer this: it reads the email from the shared
+// ~/.claude.json, which every login overwrites, so all slots would show the
+// most recent login. Instead, read the slot's own token from the keychain and
+// ask Anthropic whose it is.
 func authEmail(cfg *config.Config, pool *account.Pool, name string) string {
-	cmd := exec.Command(cfg.ClaudeCmd, "auth", "status")
-	cmd.Env = append(os.Environ(), pool.Env(name)...)
-	out, _ := cmd.Output() // exits non-zero when logged out
-	var st struct {
-		LoggedIn bool   `json:"loggedIn"`
-		Email    string `json:"email"`
-	}
-	if json.Unmarshal(out, &st) != nil {
-		return "(status unavailable)"
-	}
-	if !st.LoggedIn {
+	out, err := exec.Command("security", "find-generic-password", "-s", pool.KeychainService(name), "-w").Output()
+	if err != nil {
 		return "(not signed in)"
 	}
-	return st.Email
+	var creds struct {
+		ClaudeAiOauth struct {
+			AccessToken string `json:"accessToken"`
+		} `json:"claudeAiOauth"`
+	}
+	if json.Unmarshal(out, &creds) != nil || creds.ClaudeAiOauth.AccessToken == "" {
+		return "(no claude.ai login)"
+	}
+	req, _ := http.NewRequest("GET", "https://api.anthropic.com/api/oauth/profile", nil)
+	req.Header.Set("Authorization", "Bearer "+creds.ClaudeAiOauth.AccessToken)
+	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		return "(profile lookup failed)"
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized {
+		// Claude Code refreshes the token on its next run.
+		return "(signed in; token expired)"
+	}
+	var profile struct {
+		Account struct {
+			Email string `json:"email"`
+		} `json:"account"`
+	}
+	if resp.StatusCode != http.StatusOK || json.NewDecoder(resp.Body).Decode(&profile) != nil || profile.Account.Email == "" {
+		return fmt.Sprintf("(profile lookup failed: %s)", resp.Status)
+	}
+	return profile.Account.Email
 }
