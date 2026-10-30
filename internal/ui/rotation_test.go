@@ -88,3 +88,39 @@ func TestRotationParksAndResumes(t *testing.T) {
 		t.Fatalf("after reset: parked %v account %q running %v watching %v", s.Parked, s.Account, s.Running(), s.Limit != nil)
 	}
 }
+
+// TestRotationOnLimitMenu covers limits Claude Code enforces locally: no
+// transcript entry, only the /rate-limit-options menu on screen.
+func TestRotationOnLimitMenu(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(tmp, ".claude"))
+
+	menu := `printf "  What do you want to do?\n\n  ❯ 1. Stop and wait for limit to reset\n    2. Wait here, then continue automatically at 3:40pm\n\n  Enter to confirm · Esc to cancel\n"`
+	cfg := &config.Config{DataDir: filepath.Join(tmp, "data"), ClaudeCmd: "sh -c '" + menu + "; sleep 30' #", ResumePrompt: "go on"}
+	s, err := session.NewStore(cfg).Create("menu", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Started = true
+	a := &App{cfg: cfg, store: session.NewStore(cfg), pool: account.NewPool(cfg.DataDir, []string{"a", "b"}),
+		sessions: []*session.Session{s}, width: 120, height: 40, notify: make(chan struct{}, 1)}
+	t.Cleanup(func() {
+		if s.Proc != nil {
+			s.Proc.Kill()
+		}
+	})
+
+	a.spawn(s)
+	for deadline := time.Now().Add(3 * time.Second); s.Account == "a" && time.Now().Before(deadline); {
+		time.Sleep(50 * time.Millisecond)
+		a.checkLimits()
+	}
+	if s.Account != "b" || !s.Running() {
+		t.Fatalf("menu: account %q running %v (%s)", s.Account, s.Running(), a.errMsg)
+	}
+	// Limited until the reset the menu names, plus the grace minute.
+	if until, ok := a.pool.ExhaustedUntil("a", time.Now()); !ok || until.Local().Format("3:04pm") != "3:41pm" {
+		t.Fatalf("a limited until %v (%v), want 3:41pm", until, ok)
+	}
+}

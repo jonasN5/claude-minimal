@@ -164,3 +164,44 @@ func TestEndedOnLimit(t *testing.T) {
 		t.Fatal("older transcript's limit reported")
 	}
 }
+
+func TestLimitMenu(t *testing.T) {
+	now := time.Date(2026, 10, 29, 20, 0, 0, 0, time.UTC)
+	screen := func(wait string) []string {
+		return []string{
+			"✻ Cogitated for 7m 21s · done 7:44 PM",
+			"",
+			"❯ /rate-limit-options",
+			"",
+			"──────────────────────────────",
+			"  What do you want to do?",
+			"",
+			"  ❯ 1. Stop and wait for limit to reset",
+			"    2. Wait here, then continue automatically " + wait,
+			"    3. Ask your admin for more usage",
+			"",
+			"  Enter to confirm · Esc to cancel",
+		}
+	}
+	lim, ok := LimitMenu(screen("at 12:30am (Europe/Paris)"), now)
+	paris, _ := time.LoadLocation("Europe/Paris")
+	if want := time.Date(2026, 10, 30, 0, 30, 0, 0, paris); !ok || !lim.Resets.Equal(want) {
+		t.Fatalf("at: %v %v, want %v", lim.Resets, ok, want)
+	}
+	if lim, ok := LimitMenu(screen("shortly"), now); !ok || !lim.Resets.Equal(now) {
+		t.Fatalf("shortly: %v %v", lim.Resets, ok)
+	}
+	if lim, ok := LimitMenu(screen("when the limit resets"), now); !ok || !lim.Resets.Equal(now.Add(fallbackCooldown)) {
+		t.Fatalf("unknown reset: %v %v", lim.Resets, ok)
+	}
+	// The same text quoted in the conversation, with the prompt below it.
+	quoted := append(screen("shortly"), "", "● That menu is Claude Code's.", "", "❯", "", "  ⏵⏵ auto mode on")
+	if _, ok := LimitMenu(quoted, now); ok {
+		t.Fatal("quoted menu reported")
+	}
+	other := screen("shortly")
+	other[7], other[8] = "  ❯ 1. Yes", "    2. No"
+	if _, ok := LimitMenu(other, now); ok {
+		t.Fatal("unrelated menu reported")
+	}
+}

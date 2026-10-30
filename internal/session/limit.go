@@ -179,6 +179,49 @@ func limitMessage(line []byte) (string, bool) {
 	return text, true
 }
 
+// Claude Code also blocks requests locally once it knows the account is
+// limited: the request never reaches the API, nothing is written to the
+// transcript, and the /rate-limit-options menu waits for an answer. The
+// screen is the only trace, so the menu is matched there.
+var menuOptionRe = regexp.MustCompile(`^\s*(?:[❯>›]\s*)?\d+\.\s+(Stop and wait for limit to reset|Wait here, then continue automatically(.*))$`)
+
+const menuFooter = "Enter to confirm · Esc to cancel"
+
+// LimitMenu reports whether the rendered screen shows the usage-limit menu.
+func LimitMenu(lines []string, now time.Time) (Limit, bool) {
+	// The menu replaces the prompt at the bottom of the screen; requiring
+	// that keeps conversation text quoting it from matching.
+	footer := -1
+	for i := len(lines) - 1; i >= max(0, len(lines)-4); i-- {
+		if strings.TrimSpace(lines[i]) == menuFooter {
+			footer = i
+			break
+		}
+	}
+	if footer < 0 {
+		return Limit{}, false
+	}
+	found := false
+	resets := now.Add(fallbackCooldown)
+	for _, line := range lines[max(0, footer-12):footer] {
+		m := menuOptionRe.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		found = true
+		switch wait := strings.TrimSpace(m[2]); {
+		case wait == "shortly": // the reset has passed; the block is stale
+			resets = now
+		case strings.HasPrefix(wait, "at "):
+			resets = ParseReset("resets "+strings.TrimPrefix(wait, "at "), now)
+		}
+	}
+	if !found {
+		return Limit{}, false
+	}
+	return Limit{Message: "usage-limit menu (/rate-limit-options) on screen", Resets: resets}, true
+}
+
 var resetRe = regexp.MustCompile(`resets\s+(?:([A-Za-z]{3})[a-z]*\.?\s+(\d{1,2}),?\s+(?:at\s+)?)?(\d{1,2})(?::(\d{2}))?\s*([ap]m)(?:\s*\(([^)]+)\))?`)
 
 // fallbackCooldown applies when the reset time can't be parsed: the

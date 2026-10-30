@@ -227,6 +227,9 @@ func (a *App) checkLimits() {
 		}
 		lim, hit := s.Limit.Poll(now)
 		if !hit {
+			lim, hit = session.LimitMenu(s.Proc.ScreenLines(), now)
+		}
+		if !hit {
 			continue
 		}
 		prev := s.Account

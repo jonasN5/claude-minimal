@@ -130,6 +130,9 @@ func (p *Proc) Kill() {
 	_ = p.ptmx.Close()
 }
 
+// ScreenLines returns the rendered screen as plain text lines.
+func (p *Proc) ScreenLines() []string { return p.screenLines() }
+
 // screenLines renders the emulator's current screen as plain text lines,
 // with trailing blank lines and per-line trailing spaces removed.
 func (p *Proc) screenLines() []string {
