@@ -186,7 +186,13 @@ func (a *App) launch(s *session.Session, prompt string) {
 		// Armed before the process starts, so only errors from this run count.
 		s.Limit = session.NewLimitWatch(s.Workspace())
 	}
-	argv := s.LaunchArgv(a.cfg, prompt)
+	// A pending clear request wins over a resume: the new conversation reads
+	// progress.md instead of carrying the old context.
+	fresh := false
+	if p, ok := s.TakeClearRequest(); ok {
+		prompt, fresh = p, true
+	}
+	argv := s.LaunchArgv(a.cfg, prompt, fresh)
 	proc, err := session.Start(s.Workspace(), argv, env, cols, rows, s.ContextFile(), a.requestRepaint)
 	if err != nil {
 		a.errMsg = "launch failed: " + err.Error()
@@ -247,6 +253,22 @@ func (a *App) checkLimits() {
 	}
 }
 
+// checkClears restarts sessions that asked for a fresh conversation (by
+// writing ../clear-requested) once their turn has ended; launch consumes the
+// marker. Parked sessions get it when checkLimits resumes them.
+func (a *App) checkClears() {
+	now := time.Now()
+	for _, s := range a.sessions {
+		if !s.Running() || s.Parked || a.deleting[s.Name] || !s.ClearRequested() ||
+			!session.TurnEnded(s.Workspace(), now) {
+			continue
+		}
+		s.Proc.Kill()
+		a.launch(s, "")
+		a.flash = s.Name + ": cleared → fresh conversation"
+	}
+}
+
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case repaintMsg:
@@ -254,6 +276,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		a.checkLimits()
+		a.checkClears()
 		return a, tick()
 
 	case tea.WindowSizeMsg:

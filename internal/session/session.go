@@ -331,9 +331,10 @@ func (s *Session) writeSetupScript() error {
 // inferred from the worktree path, which is named after the project — the same
 // name in every session.
 //
-// A non-empty prompt is submitted as the first message of a resumed
-// conversation (used after switching accounts).
-func (s *Session) LaunchArgv(cfg *config.Config, prompt string) []string {
+// A non-empty prompt is submitted as the first message (used after switching
+// accounts, and to start a fresh conversation). fresh starts a new
+// conversation instead of resuming the last one, like /clear.
+func (s *Session) LaunchArgv(cfg *config.Config, prompt string, fresh bool) []string {
 	claude := cfg.ClaudeCmd
 	for _, a := range cfg.ClaudeArgs {
 		claude += " " + shQuote(a)
@@ -342,7 +343,10 @@ func (s *Session) LaunchArgv(cfg *config.Config, prompt string) []string {
 	if !s.Started {
 		script = fmt.Sprintf("sh %s; exec %s", shQuote(filepath.Join(s.Dir, "setup.sh")), claude)
 	} else {
-		script = fmt.Sprintf("exec %s --continue", claude)
+		script = "exec " + claude
+		if !fresh {
+			script += " --continue"
+		}
 		if prompt != "" {
 			script += " " + shQuote(prompt)
 		}

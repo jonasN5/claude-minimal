@@ -108,6 +108,17 @@ func (w *LimitWatch) Poll(now time.Time) (Limit, bool) {
 // usage-limit error, i.e. Claude stopped mid-task waiting for a reset. It
 // lets a restarted app re-park sessions whose in-memory parking was lost.
 func EndedOnLimit(workspace string) bool {
+	line, _ := lastMessage(workspace)
+	if line == nil {
+		return false
+	}
+	_, ok := limitMessage(line)
+	return ok
+}
+
+// lastMessage returns the last user or assistant entry of the session's most
+// recent transcript, and that transcript's modification time.
+func lastMessage(workspace string) ([]byte, time.Time) {
 	dir := transcriptDir(workspace)
 	var latest string
 	var latestMod time.Time
@@ -121,22 +132,22 @@ func EndedOnLimit(workspace string) bool {
 		}
 	}
 	if latest == "" {
-		return false
+		return nil, time.Time{}
 	}
 	f, err := os.Open(filepath.Join(dir, latest))
 	if err != nil {
-		return false
+		return nil, latestMod
 	}
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
-		return false
+		return nil, latestMod
 	}
 	const tail = 256 << 10
 	off := max(info.Size()-tail, 0)
 	buf, err := io.ReadAll(io.NewSectionReader(f, off, info.Size()-off))
 	if err != nil {
-		return false
+		return nil, info.ModTime()
 	}
 	lines := bytes.Split(buf, []byte("\n"))
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -146,10 +157,9 @@ func EndedOnLimit(workspace string) bool {
 		if json.Unmarshal(lines[i], &entry) != nil || (entry.Type != "user" && entry.Type != "assistant") {
 			continue // partial first line, metadata, summaries
 		}
-		_, ok := limitMessage(lines[i])
-		return ok
+		return lines[i], info.ModTime()
 	}
-	return false
+	return nil, info.ModTime()
 }
 
 func limitMessage(line []byte) (string, bool) {

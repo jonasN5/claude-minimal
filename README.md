@@ -41,6 +41,9 @@ How it works:
 
 Every workspace `CLAUDE.md` also asks Claude to keep `../progress.md` (goal, done, in flight, next steps) up to date, so a session cut off mid-turn resumes from an explicit checkpoint, not just the transcript. Sessions created before this feature get the note appended on their next launch.
 
+### Fresh conversation on request (`/clear` from inside)
+Neither Claude nor a hook can run `/clear`, so a long-running session (e.g. an orchestrator whose context has grown huge) asks claude-minimal instead: it writes `../clear-requested` from its workspace, holding the first prompt of the new conversation (empty = "read `../progress.md` and continue"). Once Claude's turn has ended (the transcript's last message is a final reply and nothing has been written for 10 seconds), claude-minimal stops the process and relaunches it **without** `--continue`, with that prompt, then deletes the marker. The old conversation's tail stays in `context.md`. Write the marker as the last action of a turn, after bringing `progress.md` up to date. A session that isn't running gets its fresh conversation on its next launch.
+
 ### Instant resume, no pause/resume
 The tail of every conversation is ANSI-stripped and auto-saved to a `context.md` file in the session directory (every 5 seconds and on exit). Quit whenever you like: selecting a stopped session and pressing a key relaunches it with `claude --continue`, which restores Claude's own conversation history — `context.md` covers anything else and is referenced from the workspace `CLAUDE.md`.
 

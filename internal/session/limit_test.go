@@ -98,7 +98,7 @@ func TestParseReset(t *testing.T) {
 func TestLaunchArgvResumePrompt(t *testing.T) {
 	s := &Session{Meta: Meta{Name: "s", Started: true}, Dir: "/tmp/s"}
 	cfg := &config.Config{ClaudeCmd: "claude"}
-	script := s.LaunchArgv(cfg, "it's your turn")[2]
+	script := s.LaunchArgv(cfg, "it's your turn", false)[2]
 	if !strings.HasSuffix(script, `exec claude --continue 'it'\''s your turn'`) {
 		t.Fatalf("script = %s", script)
 	}
