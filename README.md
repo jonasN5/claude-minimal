@@ -206,6 +206,7 @@ Deleting a session (⌥d) kills the process, runs teardown hooks, removes worktr
 - The right pane is a real in-process terminal emulator ([vt10x](https://github.com/hinshun/vt10x)) attached to Claude's PTY — not a tmux attach. That's what makes select-and-type instant and keeps resource usage tiny.
 - Because sessions run in-process, closing the app's terminal window stops them; that's by design. Resume is cheap: `claude --continue` restores Claude's own conversation history, and `context.md` covers anything else.
 - Idle footprint is the Go binary plus one PTY per running session. No daemons, no tmux servers.
+- While the TUI runs, the app's stderr goes to `~/.config/claude-minimal/stderr.log`, so stray output (such as macOS's "MallocStackLogging: can't turn off malloc stack logging" under memory pressure) can't draw over the screen.
 - Built with [bubbletea](https://github.com/charmbracelet/bubbletea), [lipgloss](https://github.com/charmbracelet/lipgloss), [creack/pty](https://github.com/creack/pty) and [vt10x](https://github.com/hinshun/vt10x).
 
 ## License

@@ -32,8 +32,11 @@ func main() {
 	if args := flag.Args(); len(args) > 0 {
 		os.Exit(runCommand(cfg, args))
 	}
+	// Stray stderr output would scribble over the TUI; send it to a log.
+	restoreStderr := redirectStderr(stderrLogPath())
 	app, err := ui.New(cfg)
 	if err != nil {
+		restoreStderr()
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -41,9 +44,11 @@ func main() {
 	// and click-to-select in the session list.
 	p := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	app.SetProgram(p)
-	if _, err := p.Run(); err != nil {
+	_, err = p.Run()
+	restoreStderr()
+	if err != nil {
 		app.Shutdown()
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintf(os.Stderr, "%v (details may be in %s)\n", err, stderrLogPath())
 		os.Exit(1)
 	}
 }
