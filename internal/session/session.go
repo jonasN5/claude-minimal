@@ -46,6 +46,13 @@ type Session struct {
 	// Parked is set when the session hit a limit while every account was
 	// limited; it is relaunched as soon as one of them resets.
 	Parked bool
+	// Draining is set when the session hit a limit and waits for its
+	// subagents and tool shells to finish before moving to another account.
+	Draining bool
+	// WaitSince is when a pending restart (limit, reset, clear) started
+	// waiting for work in flight; Waiting describes that work, for display.
+	WaitSince time.Time
+	Waiting   string
 }
 
 // Workspace is the directory Claude runs in.

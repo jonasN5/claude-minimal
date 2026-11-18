@@ -134,14 +134,24 @@ func lastMessage(workspace string) ([]byte, time.Time) {
 	if latest == "" {
 		return nil, time.Time{}
 	}
-	f, err := os.Open(filepath.Join(dir, latest))
+	line, mod := lastEntry(filepath.Join(dir, latest))
+	if mod.IsZero() {
+		mod = latestMod
+	}
+	return line, mod
+}
+
+// lastEntry returns the last user or assistant entry of one transcript file,
+// and the file's modification time.
+func lastEntry(path string) ([]byte, time.Time) {
+	f, err := os.Open(path)
 	if err != nil {
-		return nil, latestMod
+		return nil, time.Time{}
 	}
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
-		return nil, latestMod
+		return nil, time.Time{}
 	}
 	const tail = 256 << 10
 	off := max(info.Size()-tail, 0)

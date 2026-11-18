@@ -175,6 +175,7 @@ func (a *App) launch(s *session.Session, prompt string) {
 	_ = s.EnsureProgressNote()
 	var env []string
 	s.Account, s.Limit, s.Parked = "", nil, false
+	s.Draining, s.WaitSince, s.Waiting = false, time.Time{}, ""
 	warn := ""
 	if a.pool != nil {
 		now := time.Now()
@@ -207,11 +208,42 @@ func (a *App) launch(s *session.Session, prompt string) {
 // minute-precise ("resets 3:40pm").
 const resetGrace = time.Minute
 
+// drainTimeout caps how long a restart waits for subagents and tool shells:
+// a background dev server or a wedged agent must not hold a session forever.
+const drainTimeout = 30 * time.Minute
+
+// ready reports whether s can be restarted now: nothing is in flight (see
+// session.Busy), or the wait has exceeded drainTimeout. While it waits, the
+// session list shows what it is waiting for.
+func (a *App) ready(s *session.Session, now time.Time) bool {
+	if !s.Running() {
+		return true
+	}
+	if s.WaitSince.IsZero() {
+		s.WaitSince = now
+	}
+	busy := session.Busy(s.Workspace(), s.Proc.Pid(), s.Proc.Started(), now)
+	if busy == "" {
+		return true
+	}
+	if now.Sub(s.WaitSince) >= drainTimeout {
+		a.flash = fmt.Sprintf("%s: still busy (%s) after %s — restarting anyway", s.Name, busy, drainTimeout)
+		return true
+	}
+	s.Waiting = busy
+	return false
+}
+
 // checkLimits relaunches sessions whose account hit its usage limit on the
 // next available account, resuming the same conversation. Other sessions on
 // the limited account keep running and rotate when they hit the limit
 // themselves. When every account is limited the session is parked, and
 // resumed once the first account resets, so work continues unattended.
+//
+// A restart kills the session's subagents and tool shells, so it waits for
+// them to finish first (draining): the account is marked limited right away,
+// and the limited agents stop on their own, but a test suite or build still
+// running is worth keeping.
 func (a *App) checkLimits() {
 	if a.pool == nil {
 		return
@@ -219,13 +251,17 @@ func (a *App) checkLimits() {
 	now := time.Now()
 	for _, s := range a.sessions {
 		if s.Parked {
-			if _, ok := a.pool.Current(now); ok {
+			if _, ok := a.pool.Current(now); ok && a.ready(s, now) {
 				if s.Running() {
 					s.Proc.Kill()
 				}
 				a.launch(s, a.cfg.ResumePrompt)
 				a.flash = fmt.Sprintf("%s: limit reset → resumed on %s", s.Name, s.Account)
 			}
+			continue
+		}
+		if s.Draining {
+			a.rotate(s, now)
 			continue
 		}
 		if !s.Running() || s.Limit == nil {
@@ -238,29 +274,59 @@ func (a *App) checkLimits() {
 		if !hit {
 			continue
 		}
-		prev := s.Account
-		a.pool.MarkExhausted(prev, lim.Resets.Add(resetGrace))
+		a.pool.MarkExhausted(s.Account, lim.Resets.Add(resetGrace))
+		s.Limit = nil
 		if _, ok := a.pool.Current(now); !ok {
 			// Nowhere to go yet: leave the limit message on screen and wait.
-			s.Limit, s.Parked = nil, true
-			a.errMsg = fmt.Sprintf("%s: every account is at its usage limit — resuming at %s",
-				s.Name, a.pool.NextReset(now).Format("Mon 15:04"))
+			// Nothing is killed until an account resets.
+			a.park(s, now)
 			continue
 		}
-		s.Proc.Kill()
-		a.launch(s, a.cfg.ResumePrompt)
-		a.flash = fmt.Sprintf("%s: %s hit its limit → resumed on %s", s.Name, prev, s.Account)
+		s.Draining = true
+		a.rotate(s, now)
 	}
 }
 
+// rotate moves a draining session to the next available account once its
+// work in flight has finished.
+func (a *App) rotate(s *session.Session, now time.Time) {
+	if !a.ready(s, now) {
+		return
+	}
+	s.Draining = false
+	if _, ok := a.pool.Current(now); !ok {
+		a.park(s, now) // the other accounts ran out while it drained
+		return
+	}
+	prev := s.Account
+	if s.Running() {
+		s.Proc.Kill()
+	}
+	a.launch(s, a.cfg.ResumePrompt)
+	a.flash = fmt.Sprintf("%s: %s hit its limit → resumed on %s", s.Name, prev, s.Account)
+}
+
+func (a *App) park(s *session.Session, now time.Time) {
+	s.Parked = true
+	a.errMsg = fmt.Sprintf("%s: every account is at its usage limit — resuming at %s",
+		s.Name, a.pool.NextReset(now).Format("Mon 15:04"))
+}
+
 // checkClears restarts sessions that asked for a fresh conversation (by
-// writing ../clear-requested) once their turn has ended; launch consumes the
-// marker. Parked sessions get it when checkLimits resumes them.
+// writing ../clear-requested) once their turn has ended and their subagents
+// and tool shells are done; launch consumes the marker. Parked and draining
+// sessions get it when checkLimits resumes them.
 func (a *App) checkClears() {
 	now := time.Now()
 	for _, s := range a.sessions {
-		if !s.Running() || s.Parked || a.deleting[s.Name] || !s.ClearRequested() ||
-			!session.TurnEnded(s.Workspace(), now) {
+		if !s.Running() || s.Parked || s.Draining || a.deleting[s.Name] || !s.ClearRequested() {
+			continue
+		}
+		if !session.TurnEnded(s.Workspace(), now) {
+			s.WaitSince = time.Time{} // the wait starts when the turn ends
+			continue
+		}
+		if !a.ready(s, now) {
 			continue
 		}
 		s.Proc.Kill()
@@ -275,6 +341,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case tickMsg:
+		for _, s := range a.sessions {
+			s.Waiting = "" // set again by ready() while still waiting
+		}
 		a.checkLimits()
 		a.checkClears()
 		return a, tick()
@@ -608,6 +677,7 @@ func (a *App) reload() {
 			// the limit watch would silently stop account rotation for every
 			// running session whenever another session is created or deleted.
 			s.Proc, s.Account, s.Limit, s.Parked = o.Proc, o.Account, o.Limit, o.Parked
+			s.Draining, s.WaitSince, s.Waiting = o.Draining, o.WaitSince, o.Waiting
 		}
 	}
 	a.sessions = fresh
@@ -758,7 +828,9 @@ func (a *App) renderItem(i int) []string {
 		}
 		proj = strings.Join(names, ", ")
 	}
-	if s.Parked {
+	if s.Waiting != "" {
+		proj = "⏳ " + s.Waiting + " · " + proj
+	} else if s.Parked {
 		proj = "⏸ until " + a.pool.NextReset(time.Now()).Format("15:04") + " · " + proj
 	} else if s.Running() && s.Account != "" {
 		proj = "@" + s.Account + " · " + proj

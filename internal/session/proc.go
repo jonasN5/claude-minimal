@@ -29,6 +29,7 @@ type Proc struct {
 
 	tailPath string
 	done     chan struct{}
+	started  time.Time
 }
 
 // Start launches argv in a PTY of the given size, in dir, with env added to
@@ -51,6 +52,7 @@ func Start(dir string, argv, env []string, cols, rows int, tailPath string, onDa
 		rows:     rows,
 		tailPath: tailPath,
 		done:     make(chan struct{}),
+		started:  time.Now(),
 	}
 	go p.readLoop()
 	go p.tailLoop()
@@ -90,6 +92,12 @@ func (p *Proc) tailLoop() {
 		}
 	}
 }
+
+// Pid is the process ID of Claude.
+func (p *Proc) Pid() int { return p.cmd.Process.Pid }
+
+// Started is when the process was launched.
+func (p *Proc) Started() time.Time { return p.started }
 
 // Exited reports whether the process has terminated.
 func (p *Proc) Exited() bool {

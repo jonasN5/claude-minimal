@@ -124,3 +124,87 @@ func TestRotationOnLimitMenu(t *testing.T) {
 		t.Fatalf("a limited until %v (%v), want 3:41pm", until, ok)
 	}
 }
+
+// limitedWhileTesting starts a session whose fake Claude runs a tool shell
+// (a test suite) until the returned file exists, then makes it hit a limit
+// and checks that it drains instead of restarting.
+func limitedWhileTesting(t *testing.T) (a *App, s *session.Session, first *session.Proc, done string) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(tmp, ".claude"))
+	marker := session.ToolShellMarker
+	t.Cleanup(func() { session.ToolShellMarker = marker })
+	session.ToolShellMarker = "fake-tool-shell-" + filepath.Base(tmp)
+
+	done = filepath.Join(tmp, "tests-done")
+	shell := `sh -c "while [ ! -f ` + done + ` ]; do sleep 0.1; done # ` + session.ToolShellMarker + `" & exec sleep 30`
+	cfg := &config.Config{DataDir: filepath.Join(tmp, "data"), ClaudeCmd: "sh -c '" + shell + "' #", ResumePrompt: "go on"}
+	s, err := session.NewStore(cfg).Create("tests", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Started = true
+	a = &App{cfg: cfg, store: session.NewStore(cfg), pool: account.NewPool(cfg.DataDir, []string{"a", "b"}),
+		sessions: []*session.Session{s}, width: 120, height: 40, notify: make(chan struct{}, 1)}
+	t.Cleanup(func() {
+		_ = os.WriteFile(done, nil, 0o644)
+		if s.Proc != nil {
+			s.Proc.Kill()
+		}
+	})
+
+	a.spawn(s)
+	first = s.Proc
+	for deadline := time.Now().Add(3 * time.Second); session.Busy(s.Workspace(), first.Pid(), first.Started(), time.Now()) == ""; {
+		if time.Now().After(deadline) {
+			t.Fatal("tool shell never seen")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	transcripts := filepath.Join(tmp, ".claude", "projects", regexp.MustCompile(`[^a-zA-Z0-9]`).ReplaceAllString(s.Workspace(), "-"))
+	if err := os.MkdirAll(transcripts, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(transcripts, "t.jsonl"), []byte(limitLine), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	a.checkLimits()
+	a.checkLimits()
+	if s.Proc != first || !s.Running() || s.Account != "a" || !s.Draining || s.Waiting != "1 shell" {
+		t.Fatalf("restarted under running work: same proc %v running %v account %q draining %v waiting %q",
+			s.Proc == first, s.Running(), s.Account, s.Draining, s.Waiting)
+	}
+	if _, limited := a.pool.ExhaustedUntil("a", time.Now()); !limited {
+		t.Fatal("account a not marked limited while draining")
+	}
+	return a, s, first, done
+}
+
+// TestRotationWaitsForWork: a limit hit while a test suite runs restarts the
+// session on the next account only once the suite has finished.
+func TestRotationWaitsForWork(t *testing.T) {
+	a, s, first, done := limitedWhileTesting(t)
+	if err := os.WriteFile(done, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(3 * time.Second); s.Proc == first && time.Now().Before(deadline); {
+		time.Sleep(50 * time.Millisecond)
+		a.checkLimits()
+	}
+	if s.Proc == first || s.Account != "b" || !s.Running() || s.Draining {
+		t.Fatalf("after work done: restarted %v account %q running %v draining %v", s.Proc != first, s.Account, s.Running(), s.Draining)
+	}
+}
+
+// TestDrainTimeout: work that never ends (a dev server) holds the restart
+// for drainTimeout at most.
+func TestDrainTimeout(t *testing.T) {
+	a, s, first, _ := limitedWhileTesting(t)
+	s.WaitSince = time.Now().Add(-drainTimeout)
+	a.checkLimits()
+	if s.Proc == first || s.Account != "b" || !s.Running() {
+		t.Fatalf("after timeout: restarted %v account %q running %v", s.Proc != first, s.Account, s.Running())
+	}
+}
